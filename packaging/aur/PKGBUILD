@@ -12,7 +12,7 @@ optdepends=('carla: host the plugin on its own or in a rack'
             'kdialog: file chooser for importing presets (KDE)'
             'zenity: file chooser for importing presets (GTK)')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('02a3a4c15a39ba22f9b7d2db9f21de55afbc440b062fb22d905be7463040e03e')
 
 build() {
   cd "evenband-$pkgver"
