@@ -10,7 +10,7 @@ depends=('glibc' 'python')
 makedepends=('lv2')
 optdepends=('carla: host the plugin on its own or in a rack')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('4a7abc02f9859f89121e1f2ac284aa6beee4c723c240ba3ae59f23ab77e951b3')
 
 build() {
   cd "evenband-$pkgver"
