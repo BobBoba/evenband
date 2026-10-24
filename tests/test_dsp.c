@@ -651,6 +651,69 @@ static void test_agc_rate_independence(void)
     CHECK(fabs(g48 - g192) < 0.8, "AGC gain differs between rates by %.2f dB", fabs(g48 - g192));
 }
 
+
+/* ---- bypass ---------------------------------------------------------- */
+
+static void test_bypass(double sr)
+{
+    printf("[bypass] sr=%.0f\n", sr);
+    size_t n = pow2_at_least(sr * 3.0);
+    float *in = make_noise(n, sr, 1.0, 0.1), *out = malloc(n * sizeof *out);
+    eb_params p;
+    eb_defaults(&p);
+    p.power = 100.0f;                       /* strong processing, so a difference would show */
+
+    /* 1. bypassed output is the input, delayed by exactly the reported latency */
+    p.bypass = 1;
+    eb_state *s = eb_create(sr);
+    run_all(s, &p, in, out, n);
+    size_t lat = eb_latency(s), start = (size_t)(sr * 0.2);
+    double worst = 0.0;
+    for (size_t i = start; i < n; i++) {
+        double d = fabs((double)out[i] - (double)in[i - lat]);
+        if (d > worst) worst = d;
+    }
+    CHECK(worst < 1e-6, "bypassed output differs from the delayed input by %g", worst);
+    eb_destroy(s);
+
+    /* 2. toggling must not click: a 1 kHz sine switched on and off every 0.5 s */
+    float *sine = malloc(n * sizeof *sine);
+    for (size_t i = 0; i < n; i++) sine[i] = (float)(0.25 * sin(2.0 * PI * 1000.0 * (double)i / sr));
+    s = eb_create(sr);
+    const size_t seg = (size_t)(sr * 0.5);
+    for (size_t i = 0; i + seg <= n; i += seg) {
+        p.bypass = (int)((i / seg) & 1);
+        eb_process(s, &p, sine + i, sine + i, out + i, out + i, (uint32_t)seg);
+    }
+    double jump = 0.0, slope = 2.0 * PI * 1000.0 * 0.25 / sr;
+    for (size_t i = 1; i < n - seg; i++) {
+        double d = fabs((double)out[i] - (double)out[i - 1]);
+        if (d > jump) jump = d;
+    }
+    CHECK(jump < 4.0 * slope, "switching clicks: largest step %.4f vs signal slope %.4f", jump, slope);
+    eb_destroy(s);
+
+    /* 3. processing keeps adapting during bypass, so switching back is instant */
+    eb_params a = agc_params(100.0, 24.0);
+    a.limiter_on = 1;
+    size_t half = (size_t)(sr * 4.0);
+    float *buf = malloc(2 * half * sizeof *buf);
+    float *noise = make_noise(pow2_at_least((double)(2 * half)), sr, 1.0, pow(10.0, -24.0 / 20.0));
+    memcpy(buf, noise, 2 * half * sizeof *buf);
+    float *res = malloc(2 * half * sizeof *res);
+    s = eb_create(sr);
+    a.bypass = 1;
+    eb_process(s, &a, buf, buf, res, res, (uint32_t)half);
+    a.bypass = 0;
+    eb_process(s, &a, buf + half, buf + half, res + half, res + half, (uint32_t)half);
+    size_t w = (size_t)(sr * 0.3), t0 = half + (size_t)(sr * 0.1);
+    double g_first = rms_db(res, t0, w) - rms_db(buf, t0, w);
+    double g_late = rms_db(res, 2 * half - w, w) - rms_db(buf, 2 * half - w, w);
+    CHECK(fabs(g_first - g_late) < 1.5, "after un-bypass the gain must already be adapted: %.1f dB then %.1f dB", g_first, g_late);
+    eb_destroy(s);
+    free(in); free(out); free(sine); free(buf); free(noise); free(res);
+}
+
 int main(void)
 {
     const double rates[2] = {48000.0, 192000.0};
@@ -685,6 +748,7 @@ int main(void)
         test_agc_robust(rates[r]);
     }
     test_agc_rate_independence();
+    for (int r = 0; r < 2; r++) test_bypass(rates[r]);
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/keysym.h>
 #include <cairo-xlib.h>
 #include <lv2/core/lv2.h>
 #include <lv2/ui/ui.h>
@@ -56,7 +58,8 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor *d, const char *uri, cons
     }
     eb_ui_size(u->core, &u->width, &u->height);
     u->win = XCreateSimpleWindow(u->dpy, parent, 0, 0, (unsigned)u->width, (unsigned)u->height, 0, 0, 0x1f2329);
-    XSelectInput(u->dpy, u->win, ExposureMask | ButtonPressMask | PointerMotionMask | LeaveWindowMask | StructureNotifyMask);
+    XSelectInput(u->dpy, u->win, ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
+                                     LeaveWindowMask | KeyPressMask | StructureNotifyMask);
     XMapWindow(u->dpy, u->win);
     XFlush(u->dpy);
     if (resize && resize->ui_resize) resize->ui_resize(resize->handle, u->width, u->height);
@@ -99,6 +102,19 @@ static void redraw(x11_ui *u)
     XFlush(u->dpy);
 }
 
+static void key_event(x11_ui *u, XKeyEvent *ev)
+{
+    char buf[16];
+    KeySym sym = NoSymbol;
+    int n = XLookupString(ev, buf, (int)sizeof buf, &sym, NULL);
+    int dirty = 0;
+    if (sym == XK_BackSpace) dirty = eb_ui_key(u->core, 0, EB_KEY_BACKSPACE);
+    else if (sym == XK_Return || sym == XK_KP_Enter) dirty = eb_ui_key(u->core, 0, EB_KEY_ENTER);
+    else if (sym == XK_Escape) dirty = eb_ui_key(u->core, 0, EB_KEY_ESCAPE);
+    else if (n == 1) dirty = eb_ui_key(u->core, (unsigned char)buf[0], EB_KEY_NONE);
+    if (dirty) u->dirty = 1;
+}
+
 static int idle(LV2UI_Handle h)
 {
     x11_ui *u = (x11_ui *)h;
@@ -115,18 +131,34 @@ static int idle(LV2UI_Handle h)
             u->dirty = 1;
             break;
         case MotionNotify:
-            if (eb_ui_motion(u->core, ev.xmotion.x, ev.xmotion.y)) u->dirty = 1;
+            if (eb_ui_motion(u->core, ev.xmotion.x, ev.xmotion.y, (ev.xmotion.state & Button1Mask) != 0)) u->dirty = 1;
             break;
         case LeaveNotify:
-            if (eb_ui_motion(u->core, -1, -1)) u->dirty = 1;
+            if (eb_ui_motion(u->core, -1, -1, (ev.xcrossing.state & Button1Mask) != 0)) u->dirty = 1;
             break;
-        case ButtonPress:
-            if (ev.xbutton.button == Button1 && eb_ui_click(u->core, ev.xbutton.x, ev.xbutton.y)) u->dirty = 1;
+        case ButtonPress: {
+            unsigned b = ev.xbutton.button;
+            if (b == Button4 || b == Button5) {
+                if (eb_ui_scroll(u->core, ev.xbutton.x, ev.xbutton.y, b == Button4 ? 1 : -1)) u->dirty = 1;
+            } else if (b == Button1 || b == Button3) {
+                if (eb_ui_press(u->core, ev.xbutton.x, ev.xbutton.y, b == Button1 ? 1 : 3)) u->dirty = 1;
+                if (eb_ui_wants_keys(u->core)) XSetInputFocus(u->dpy, u->win, RevertToParent, CurrentTime);
+            }
+            break;
+        }
+        case ButtonRelease:
+            if (ev.xbutton.button == Button1 || ev.xbutton.button == Button3) {
+                if (eb_ui_release(u->core, ev.xbutton.x, ev.xbutton.y, ev.xbutton.button == Button1 ? 1 : 3)) u->dirty = 1;
+            }
+            break;
+        case KeyPress:
+            key_event(u, &ev.xkey);
             break;
         default:
             break;
         }
     }
+    if (eb_ui_poll(u->core)) u->dirty = 1;
     if (u->dirty) {
         u->dirty = 0;
         redraw(u);

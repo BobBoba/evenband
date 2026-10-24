@@ -1,39 +1,149 @@
 #include "eb_ui_core.h"
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <time.h>
 
 #include "eb_presets.h"
+#include "eb_spawn.h"
 
 enum {
-    WIDTH = 660,
-    MARGIN = 16,
-    GAP = 8,
-    COLUMNS = 3,
-    CELL_H = 30,
-    HEADER_H = 58,
-    METER_ROW_H = 24,
-    METER_RANGE_DB = 24
+    WIDTH = 900,
+    HEIGHT = 340,
+    ROW_H = 24,
+    LIST_ROWS = 5,
+    MAX_WIDGETS = 80,
+    BAND_COUNT = 5
 };
 
-static const char *const BAND_NAME[5] = {"Deep Bass", "Warmth", "Mids", "Presence", "Brilliance"};
+enum { W_SLIDER, W_TOGGLE, W_SEG, W_BUTTON, W_METER, W_LIST };
+enum { A_NONE, A_NEW, A_SAVE, A_SAVE_AS, A_DELETE, A_IMPORT };
+enum { IMPORT_NONE, IMPORT_KDIALOG, IMPORT_ZENITY, IMPORT_CONVERT };
+
+static const char *const BAND_NAME[BAND_COUNT] = {"Deep Bass", "Warmth", "Mids", "Presence", "Brilliance"};
+static const char *const BUTTON_CAPTION[] = {"", "New", "Save", "Save as...", "Delete", "Import..."};
 static const char *const SUFFIX = " (BreakawayOne)";
+
+typedef struct {
+    int type;
+    int port;                 /* control port, -1 for buttons and the list */
+    int action;
+    double x, y, w, h;
+    int cell;                 /* slider inside the band table: value only, no name */
+} widget;
 
 struct eb_ui {
     eb_ui_write_fn write;
     void *ctx;
-    int count;                       /* button 0 is the built-in default */
+
+    int count;                /* presets, entry 0 is the built-in default */
     eb_preset preset[EB_PRESETS_MAX + 1];
     float cur[P_COUNT];
-    int hover;
     int selected;
+
+    widget w[MAX_WIDGETS];
+    int nw;
+    int hover, drag, drag_list;
+    int list_first;
+    int last_w;
+    double last_click;
+
+    char last_label[EB_PRESET_LABEL_MAX];   /* the preset most recently applied or saved */
+    int last_user;
+
+    int dlg;
+    int dlg_fresh;            /* the proposed name is selected: the first key replaces it */
+    char dlg_text[EB_USER_LABEL_MAX * 4];
+    int dlg_len;
+
+    char toast[128];
+    double toast_until, delete_until;
+
+    eb_spawn sp;
+    int stage;
+    char convert_label[EB_PRESET_LABEL_MAX];
 };
 
-static int is_control_input(int port)
+/* ---- helpers ------------------------------------------------------------ */
+
+static double now(void)
 {
-    return port >= P_POWER && port < P_COUNT && !eb_port_is_output[port];
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
+}
+
+static void say(eb_ui *ui, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(ui->toast, sizeof ui->toast, fmt, ap);
+    va_end(ap);
+    ui->toast_until = now() + 5.0;
+}
+
+static int is_control(int port) { return port >= P_POWER && !eb_port_is_output[port]; }
+static int in_preset(int port) { return is_control(port) && eb_meta[port].in_preset; }
+
+static double frac_of(int port, double v)
+{
+    double lo = (double)eb_port_min[port], hi = (double)eb_port_max[port];
+    if (hi <= lo) return 0;
+    double f = eb_meta[port].log && lo > 0 ? (log(fmax(v, lo)) - log(lo)) / (log(hi) - log(lo)) : (v - lo) / (hi - lo);
+    return fmax(0.0, fmin(1.0, f));
+}
+
+static double value_of(int port, double f)
+{
+    double lo = (double)eb_port_min[port], hi = (double)eb_port_max[port];
+    f = fmax(0.0, fmin(1.0, f));
+    return eb_meta[port].log && lo > 0 ? exp(log(lo) + f * (log(hi) - log(lo))) : lo + f * (hi - lo);
+}
+
+static void set_port(eb_ui *ui, int port, double v)
+{
+    if (!is_control(port)) return;
+    v = fmax((double)eb_port_min[port], fmin((double)eb_port_max[port], v));
+    if (eb_meta[port].integer) v = floor(v + 0.5);
+    float f = (float)v;
+    if (f == ui->cur[port]) return;
+    ui->cur[port] = f;
+    if (ui->write) ui->write(ui->ctx, (uint32_t)port, f);
+}
+
+static int preset_matches(const eb_ui *ui, int b)
+{
+    const eb_preset *p = &ui->preset[b];
+    int any = 0;
+    for (int i = 0; i < P_COUNT; i++) {
+        if (!p->has[i] || !in_preset(i)) continue;
+        any = 1;
+        float tol = 1e-3f * fmaxf(1.0f, fabsf(p->value[i]));
+        if (fabsf(ui->cur[i] - p->value[i]) > tol) return 0;
+    }
+    return any;
+}
+
+/* Several presets can hold the same values; the one being worked with wins. */
+static void update_selected(eb_ui *ui)
+{
+    ui->selected = -1;
+    for (int b = 0; b < ui->count && ui->last_label[0]; b++) {
+        if (strcmp(ui->preset[b].label, ui->last_label) == 0 && preset_matches(ui, b)) {
+            ui->selected = b;
+            return;
+        }
+    }
+    for (int b = 0; b < ui->count; b++) {
+        if (preset_matches(ui, b)) {
+            ui->selected = b;
+            return;
+        }
+    }
 }
 
 static void build_default(eb_preset *p)
@@ -41,27 +151,112 @@ static void build_default(eb_preset *p)
     memset(p, 0, sizeof *p);
     snprintf(p->label, sizeof p->label, "Balance (default)");
     for (int i = 0; i < P_COUNT; i++) {
-        if (is_control_input(i)) {
+        if (in_preset(i)) {
             p->value[i] = eb_port_default[i];
             p->has[i] = 1;
         }
     }
 }
 
-static void update_selected(eb_ui *ui)
+static void ensure_visible(eb_ui *ui, int index)
 {
-    ui->selected = -1;
-    for (int b = 0; b < ui->count && ui->selected < 0; b++) {
-        const eb_preset *p = &ui->preset[b];
-        int match = 1;
-        for (int i = 0; i < P_COUNT && match; i++) {
-            if (!p->has[i]) continue;
-            float tol = 1e-3f * fmaxf(1.0f, fabsf(p->value[i]));
-            if (fabsf(ui->cur[i] - p->value[i]) > tol) match = 0;
-        }
-        if (match) ui->selected = b;
-    }
+    if (index < 0) return;
+    if (index < ui->list_first) ui->list_first = index;
+    if (index >= ui->list_first + LIST_ROWS) ui->list_first = index - LIST_ROWS + 1;
+    int max_first = ui->count > LIST_ROWS ? ui->count - LIST_ROWS : 0;
+    if (ui->list_first > max_first) ui->list_first = max_first;
+    if (ui->list_first < 0) ui->list_first = 0;
 }
+
+static void rescan(eb_ui *ui, const char *select)
+{
+    char keep[EB_PRESET_LABEL_MAX] = "";
+    if (select) snprintf(keep, sizeof keep, "%s", select);
+    else if (ui->selected >= 0) snprintf(keep, sizeof keep, "%s", ui->preset[ui->selected].label);
+    ui->count = 1 + eb_presets_scan(&ui->preset[1], EB_PRESETS_MAX);
+    update_selected(ui);
+    for (int i = 0; i < ui->count && keep[0]; i++) {
+        if (strcmp(ui->preset[i].label, keep) == 0) ensure_visible(ui, i);
+    }
+    ensure_visible(ui, ui->list_first);
+}
+
+static void apply_preset(eb_ui *ui, int index)
+{
+    const eb_preset *p = &ui->preset[index];
+    for (int i = 0; i < P_COUNT; i++) {
+        if (p->has[i] && in_preset(i)) set_port(ui, i, p->value[i]);
+    }
+    snprintf(ui->last_label, sizeof ui->last_label, "%s", p->label);
+    ui->last_user = p->user;
+    update_selected(ui);
+}
+
+/* ---- layout ------------------------------------------------------------- */
+
+static widget *add(eb_ui *ui, int type, int port, int action, double x, double y, double w, double h)
+{
+    widget *a = &ui->w[ui->nw++];
+    memset(a, 0, sizeof *a);
+    a->type = type;
+    a->port = port;
+    a->action = action;
+    a->x = x;
+    a->y = y;
+    a->w = w;
+    a->h = h;
+    return a;
+}
+
+static void build_layout(eb_ui *ui)
+{
+    add(ui, W_LIST, -1, A_NONE, 10, 38, 270, ROW_H * LIST_ROWS + 4);
+    const double bw3 = (270 - 12) / 3.0;
+    add(ui, W_BUTTON, -1, A_NEW, 10, 168, bw3, 24);
+    add(ui, W_BUTTON, -1, A_SAVE, 10 + bw3 + 6, 168, bw3, 24);
+    add(ui, W_BUTTON, -1, A_SAVE_AS, 10 + 2 * (bw3 + 6), 168, bw3, 24);
+    add(ui, W_BUTTON, -1, A_DELETE, 10, 198, 132, 24);
+    add(ui, W_BUTTON, -1, A_IMPORT, 148, 198, 132, 24);
+    add(ui, W_SEG, P_MODE, A_NONE, 10, 230, 270, 24);
+    add(ui, W_SEG, P_XOVER_TYPE, A_NONE, 10, 260, 270, 24);
+    add(ui, W_TOGGLE, P_KEEP_LEVEL, A_NONE, 10, 290, 132, 24);
+    add(ui, W_TOGGLE, P_LIMITER, A_NONE, 148, 290, 132, 24);
+    add(ui, W_TOGGLE, P_BYPASS, A_NONE, WIDTH - 10 - 96, 6, 96, 22);
+
+    static const int left[5] = {P_POWER, P_SPEED, P_RANGE_BOOST, P_RANGE_CUT, P_TILT};
+    static const int right[4] = {P_TARGET, P_TRIM, P_GATE, P_CEILING};
+    for (int r = 0; r < 5; r++) add(ui, W_SLIDER, left[r], A_NONE, 292, 38 + r * 24, 294, 20);
+    for (int r = 0; r < 4; r++) add(ui, W_SLIDER, right[r], A_NONE, 596, 38 + r * 24, 294, 20);
+
+    for (int b = 0; b < BAND_COUNT; b++) {
+        double y = 182 + b * 24;
+        add(ui, W_SLIDER, P_DEEP_BASS + b, A_NONE, 374, y, 104, 20)->cell = 1;
+        add(ui, W_SLIDER, P_MIX0 + b, A_NONE, 484, y, 104, 20)->cell = 1;
+        add(ui, W_SLIDER, P_ATK0 + b, A_NONE, 594, y, 104, 20)->cell = 1;
+        add(ui, W_SLIDER, P_REL0 + b, A_NONE, 704, y, 104, 20)->cell = 1;
+        add(ui, W_METER, P_METER_DEEP_BASS + b, A_NONE, 814, y, 76, 20);
+    }
+    for (int i = 0; i < 4; i++) add(ui, W_SLIDER, P_XOVER1 + i, A_NONE, 292 + i * 151, 308, 145, 20);
+}
+
+static int find_widget(const eb_ui *ui, double x, double y)
+{
+    for (int i = 0; i < ui->nw; i++) {
+        const widget *a = &ui->w[i];
+        if (x >= a->x && x < a->x + a->w && y >= a->y && y < a->y + a->h) return i;
+    }
+    return -1;
+}
+
+static int find_port_widget(const eb_ui *ui, int port)
+{
+    for (int i = 0; i < ui->nw; i++) {
+        if (ui->w[i].port == port && ui->w[i].type != W_METER) return i;
+    }
+    return -1;
+}
+
+/* ---- construction ------------------------------------------------------- */
 
 eb_ui *eb_ui_new(eb_ui_write_fn write, void *ctx)
 {
@@ -69,35 +264,33 @@ eb_ui *eb_ui_new(eb_ui_write_fn write, void *ctx)
     if (!ui) return NULL;
     ui->write = write;
     ui->ctx = ctx;
-    ui->hover = -1;
+    ui->hover = ui->drag = ui->last_w = -1;
+    ui->drag_list = 0;
     for (int i = 0; i < P_COUNT; i++) ui->cur[i] = eb_port_default[i];
     build_default(&ui->preset[0]);
-    ui->count = 1 + eb_presets_scan(&ui->preset[1], EB_PRESETS_MAX);
-    update_selected(ui);
+    ui->sp.fd = -1;
+    build_layout(ui);
+    rescan(ui, NULL);
+    if (ui->selected >= 0) {
+        snprintf(ui->last_label, sizeof ui->last_label, "%s", ui->preset[ui->selected].label);
+        ui->last_user = ui->preset[ui->selected].user;
+        ensure_visible(ui, ui->selected);
+    }
     return ui;
 }
 
-void eb_ui_free(eb_ui *ui) { free(ui); }
-
-static int rows(const eb_ui *ui) { return (ui->count + COLUMNS - 1) / COLUMNS; }
-
-static double cell_w(void) { return (WIDTH - 2.0 * MARGIN - (COLUMNS - 1) * GAP) / COLUMNS; }
-
-static void cell_origin(int index, double *x, double *y)
+void eb_ui_free(eb_ui *ui)
 {
-    *x = MARGIN + (index % COLUMNS) * (cell_w() + GAP);
-    *y = HEADER_H + (index / COLUMNS) * (CELL_H + GAP);
-}
-
-static double meter_top(const eb_ui *ui)
-{
-    return HEADER_H + rows(ui) * (CELL_H + GAP) + 18;
+    if (!ui) return;
+    eb_spawn_abort(&ui->sp);
+    free(ui);
 }
 
 void eb_ui_size(const eb_ui *ui, int *width, int *height)
 {
+    (void)ui;
     *width = WIDTH;
-    *height = (int)(meter_top(ui) + 5 * METER_ROW_H + MARGIN);
+    *height = HEIGHT;
 }
 
 void eb_ui_port(eb_ui *ui, uint32_t port, float value)
@@ -107,56 +300,438 @@ void eb_ui_port(eb_ui *ui, uint32_t port, float value)
     update_selected(ui);
 }
 
-static int hit(const eb_ui *ui, double x, double y)
+/* ---- actions ------------------------------------------------------------ */
+
+static void open_dialog(eb_ui *ui, const char *initial)
 {
-    for (int i = 0; i < ui->count; i++) {
-        double ox, oy;
-        cell_origin(i, &ox, &oy);
-        if (x >= ox && x < ox + cell_w() && y >= oy && y < oy + CELL_H) return i;
-    }
-    return -1;
+    ui->dlg = 1;
+    snprintf(ui->dlg_text, sizeof ui->dlg_text, "%s", initial);
+    ui->dlg_len = (int)strlen(ui->dlg_text);
+    ui->dlg_fresh = ui->dlg_len > 0;
 }
 
-int eb_ui_motion(eb_ui *ui, double x, double y)
+static void save_as(eb_ui *ui, const char *name)
 {
-    int h = hit(ui, x, y);
+    char label[EB_PRESET_LABEL_MAX];
+    eb_preset_clean_label(name, label, sizeof label);
+    for (int i = 1; i < ui->count; i++) {                /* never hide an installed preset behind a user one */
+        if (!ui->preset[i].user && strcmp(ui->preset[i].label, label) == 0) {
+            size_t n = strlen(label);
+            if (n + 8 < sizeof label) snprintf(label + n, sizeof label - n, " (mine)");
+            break;
+        }
+    }
+    char file[512];
+    if (eb_preset_save(label, ui->cur, file, sizeof file) != 0) {
+        say(ui, "Could not save the preset");
+        return;
+    }
+    snprintf(ui->last_label, sizeof ui->last_label, "%s", label);
+    ui->last_user = 1;
+    rescan(ui, label);
+    say(ui, "Saved \"%s\"", label);
+}
+
+static void do_save(eb_ui *ui)
+{
+    if (ui->last_user && ui->last_label[0]) save_as(ui, ui->last_label);
+    else open_dialog(ui, "My preset");
+}
+
+static void do_delete(eb_ui *ui)
+{
+    if (ui->selected < 0 || !ui->preset[ui->selected].user) return;
+    const eb_preset *p = &ui->preset[ui->selected];
+    double t = now();
+    if (ui->delete_until < t) {
+        ui->delete_until = t + 3.0;
+        say(ui, "Click Delete again to remove \"%s\"", p->label);
+        return;
+    }
+    char label[EB_PRESET_LABEL_MAX];
+    snprintf(label, sizeof label, "%s", p->label);
+    ui->delete_until = 0;
+    if (eb_preset_delete(p->file) == 0) {
+        ui->last_label[0] = '\0';
+        ui->last_user = 0;
+        rescan(ui, "");
+        say(ui, "Deleted \"%s\"", label);
+    } else {
+        say(ui, "Could not delete \"%s\"", label);
+    }
+}
+
+static int has_ext(const char *path, const char *ext)
+{
+    size_t a = strlen(path), b = strlen(ext);
+    return a >= b && strcasecmp(path + a - b, ext) == 0;
+}
+
+void eb_ui_import_file(eb_ui *ui, const char *path)
+{
+    if (has_ext(path, ".ttl")) {
+        char label[EB_PRESET_LABEL_MAX];
+        if (eb_preset_import_ttl(path, label, sizeof label) == 0) {
+            rescan(ui, label);
+            say(ui, "Imported \"%s\"", label);
+        } else {
+            say(ui, "Not an Evenband preset file");
+        }
+    } else if (has_ext(path, ".amx")) {
+        char bundle[900];
+        if (eb_user_bundle_dir(bundle, sizeof bundle) != 0) return;
+        char *argv[] = {"evenband-amx2lv2", "--add", (char *)path, bundle, NULL};
+        if (eb_spawn_start(&ui->sp, argv) == 0) {
+            ui->stage = IMPORT_CONVERT;
+            say(ui, "Converting...");
+        } else {
+            say(ui, "Could not start the converter");
+        }
+    } else {
+        say(ui, "Choose a .amx (BreakawayOne) or .ttl (LV2 preset) file");
+    }
+}
+
+static void start_chooser(eb_ui *ui, int stage)
+{
+    const char *home = getenv("HOME");
+    char *kd[] = {"kdialog", "--getopenfilename", (char *)(home ? home : "/"), "*.amx *.ttl|Presets (*.amx *.ttl)", NULL};
+    char *zn[] = {"zenity", "--file-selection", "--title=Import preset", "--file-filter=Presets | *.amx *.ttl", NULL};
+    if (eb_spawn_start(&ui->sp, stage == IMPORT_KDIALOG ? kd : zn) == 0) ui->stage = stage;
+    else say(ui, "Could not open a file chooser");
+}
+
+static void do_import(eb_ui *ui)
+{
+    if (ui->stage != IMPORT_NONE) return;
+    start_chooser(ui, IMPORT_KDIALOG);
+}
+
+static void run_action(eb_ui *ui, int action)
+{
+    switch (action) {
+    case A_NEW:
+        apply_preset(ui, 0);
+        ui->last_label[0] = '\0';
+        ui->last_user = 0;
+        say(ui, "New settings: defaults");
+        break;
+    case A_SAVE: do_save(ui); break;
+    case A_SAVE_AS: open_dialog(ui, ui->last_label[0] ? ui->last_label : "My preset"); break;
+    case A_DELETE: do_delete(ui); break;
+    case A_IMPORT: do_import(ui); break;
+    default: break;
+    }
+}
+
+int eb_ui_poll(eb_ui *ui)
+{
+    int redraw = 0;
+    double t = now();
+    if (ui->toast[0] && t > ui->toast_until) {
+        ui->toast[0] = '\0';
+        redraw = 1;
+    }
+    if (ui->delete_until && t > ui->delete_until) {
+        ui->delete_until = 0;
+        redraw = 1;
+    }
+    if (ui->stage != IMPORT_NONE) {
+        int st = 0;
+        char out[1024];
+        if (eb_spawn_poll(&ui->sp, &st, out, sizeof out)) {
+            int stage = ui->stage;
+            ui->stage = IMPORT_NONE;
+            redraw = 1;
+            if (stage == IMPORT_KDIALOG && st == 127) {
+                start_chooser(ui, IMPORT_ZENITY);
+            } else if (stage == IMPORT_ZENITY && st == 127) {
+                say(ui, "No file chooser found (install kdialog or zenity)");
+            } else if (stage == IMPORT_CONVERT) {
+                if (st == 0) {
+                    rescan(ui, NULL);
+                    say(ui, "Imported");
+                } else if (st == 127) {
+                    say(ui, "Install evenband-amx2lv2 to import .amx files");
+                } else {
+                    say(ui, "The preset file could not be converted");
+                }
+            } else if (st == 0 && out[0]) {
+                eb_ui_import_file(ui, out);
+            }
+        }
+    }
+    return redraw;
+}
+
+/* ---- events ------------------------------------------------------------- */
+
+static void list_geometry(const eb_ui *ui, const widget **list)
+{
+    for (int i = 0; i < ui->nw; i++) {
+        if (ui->w[i].type == W_LIST) {
+            *list = &ui->w[i];
+            return;
+        }
+    }
+    *list = NULL;
+}
+
+static int list_row_at(const eb_ui *ui, const widget *l, double x, double y)
+{
+    if (x < l->x || x >= l->x + l->w - (ui->count > LIST_ROWS ? 10 : 0) || y < l->y + 2 || y >= l->y + 2 + ROW_H * LIST_ROWS) return -1;
+    int row = ui->list_first + (int)((y - l->y - 2) / ROW_H);
+    return row < ui->count ? row : -1;
+}
+
+static void scroll_to_fraction(eb_ui *ui, const widget *l, double y)
+{
+    int max_first = ui->count > LIST_ROWS ? ui->count - LIST_ROWS : 0;
+    double f = (y - l->y - 2) / (ROW_H * LIST_ROWS);
+    ui->list_first = (int)floor(f * (max_first + 1));
+    if (ui->list_first < 0) ui->list_first = 0;
+    if (ui->list_first > max_first) ui->list_first = max_first;
+}
+
+static int dialog_geometry(double *x, double *y, double *w, double *h)
+{
+    *w = 380;
+    *h = 124;
+    *x = (WIDTH - *w) / 2;
+    *y = (HEIGHT - *h) / 2;
+    return 1;
+}
+
+static void dialog_buttons(double *okx, double *cx, double *by, double *bw)
+{
+    double x, y, w, h;
+    dialog_geometry(&x, &y, &w, &h);
+    *bw = 80;
+    *by = y + h - 36;
+    *okx = x + w - 2 * 80 - 22;
+    *cx = x + w - 80 - 12;
+}
+
+static void finish_dialog(eb_ui *ui, int accept)
+{
+    ui->dlg = 0;
+    if (accept && ui->dlg_len > 0) save_as(ui, ui->dlg_text);
+}
+
+int eb_ui_press(eb_ui *ui, double x, double y, int button)
+{
+    if (ui->dlg) {
+        double okx, cx, by, bw;
+        dialog_buttons(&okx, &cx, &by, &bw);
+        if (button == 1 && y >= by && y < by + 26) {
+            if (x >= okx && x < okx + bw) finish_dialog(ui, 1);
+            else if (x >= cx && x < cx + bw) finish_dialog(ui, 0);
+        }
+        return 1;
+    }
+    double t = now();
+    int i = find_widget(ui, x, y);
+    if (i < 0) return 0;
+    widget *a = &ui->w[i];
+    int redraw = 1;
+    switch (a->type) {
+    case W_SLIDER:
+        if (button == 3 || (button == 1 && ui->last_w == i && t - ui->last_click < 0.35)) {
+            set_port(ui, a->port, (double)eb_port_default[a->port]);
+            ui->drag = -1;
+        } else if (button == 1) {
+            ui->drag = i;
+            set_port(ui, a->port, value_of(a->port, (x - a->x) / a->w));
+        }
+        break;
+    case W_TOGGLE:
+        if (button == 1) set_port(ui, a->port, ui->cur[a->port] >= 0.5f ? 0.0 : 1.0);
+        break;
+    case W_SEG:
+        if (button == 1) {
+            int n = eb_meta[a->port].n_labels;
+            int seg = n > 0 ? (int)((x - a->x) / (a->w / n)) : 0;
+            if (seg >= n) seg = n - 1;
+            set_port(ui, a->port, seg);
+        }
+        break;
+    case W_BUTTON:
+        if (button == 1) run_action(ui, a->action);
+        break;
+    case W_LIST: {
+        int r = list_row_at(ui, a, x, y);
+        if (r >= 0 && button == 1) {
+            apply_preset(ui, r);
+            ui->delete_until = 0;
+        } else if (r < 0 && ui->count > LIST_ROWS && x >= a->x + a->w - 10 && button == 1) {
+            ui->drag_list = 1;
+            scroll_to_fraction(ui, a, y);
+        }
+        break;
+    }
+    default:
+        redraw = 0;
+        break;
+    }
+    ui->last_w = i;
+    ui->last_click = t;
+    return redraw;
+}
+
+int eb_ui_motion(eb_ui *ui, double x, double y, int left_down)
+{
+    if (ui->dlg) return 0;
+    if (!left_down) {
+        ui->drag = -1;
+        ui->drag_list = 0;
+    }
+    if (ui->drag >= 0) {
+        const widget *a = &ui->w[ui->drag];
+        set_port(ui, a->port, value_of(a->port, (x - a->x) / a->w));
+        return 1;
+    }
+    if (ui->drag_list) {
+        const widget *l;
+        list_geometry(ui, &l);
+        if (l) scroll_to_fraction(ui, l, y);
+        return 1;
+    }
+    int h = find_widget(ui, x, y);
     if (h == ui->hover) return 0;
     ui->hover = h;
     return 1;
 }
 
-int eb_ui_click(eb_ui *ui, double x, double y)
+int eb_ui_release(eb_ui *ui, double x, double y, int button)
 {
-    int b = hit(ui, x, y);
-    if (b < 0) return 0;
-    const eb_preset *p = &ui->preset[b];
-    for (int i = 0; i < P_COUNT; i++) {
-        if (!p->has[i] || !is_control_input(i)) continue;
-        ui->cur[i] = p->value[i];
-        if (ui->write) ui->write(ui->ctx, (uint32_t)i, p->value[i]);
+    (void)x; (void)y;
+    if (button == 1) {
+        ui->drag = -1;
+        ui->drag_list = 0;
     }
-    update_selected(ui);
+    return 0;
+}
+
+int eb_ui_scroll(eb_ui *ui, double x, double y, int direction)
+{
+    if (ui->dlg) return 0;
+    int i = find_widget(ui, x, y);
+    if (i < 0) return 0;
+    const widget *a = &ui->w[i];
+    if (a->type == W_LIST) {
+        int max_first = ui->count > LIST_ROWS ? ui->count - LIST_ROWS : 0;
+        ui->list_first -= direction;
+        if (ui->list_first < 0) ui->list_first = 0;
+        if (ui->list_first > max_first) ui->list_first = max_first;
+        return 1;
+    }
+    if (a->type == W_SLIDER) {
+        set_port(ui, a->port, value_of(a->port, frac_of(a->port, ui->cur[a->port]) + 0.02 * direction));
+        return 1;
+    }
+    return 0;
+}
+
+int eb_ui_wants_keys(const eb_ui *ui) { return ui->dlg; }
+
+static int utf8_encode(uint32_t c, char *out)
+{
+    if (c < 0x80) { out[0] = (char)c; return 1; }
+    if (c < 0x800) { out[0] = (char)(0xC0 | (c >> 6)); out[1] = (char)(0x80 | (c & 0x3F)); return 2; }
+    if (c < 0x10000) {
+        out[0] = (char)(0xE0 | (c >> 12)); out[1] = (char)(0x80 | ((c >> 6) & 0x3F)); out[2] = (char)(0x80 | (c & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (c >> 18)); out[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((c >> 6) & 0x3F)); out[3] = (char)(0x80 | (c & 0x3F));
+    return 4;
+}
+
+int eb_ui_key(eb_ui *ui, uint32_t codepoint, int special)
+{
+    if (!ui->dlg) return 0;
+    if (special == EB_KEY_ESCAPE) {
+        finish_dialog(ui, 0);
+    } else if (special == EB_KEY_ENTER) {
+        finish_dialog(ui, 1);
+    } else if (special == EB_KEY_BACKSPACE) {
+        if (ui->dlg_fresh) {
+            ui->dlg_fresh = 0;
+            ui->dlg_len = 0;
+            ui->dlg_text[0] = '\0';
+            return 1;
+        }
+        while (ui->dlg_len > 0 && (ui->dlg_text[ui->dlg_len - 1] & 0xC0) == 0x80) ui->dlg_len--;
+        if (ui->dlg_len > 0) ui->dlg_len--;
+        ui->dlg_text[ui->dlg_len] = '\0';
+    } else if (codepoint >= 32 && codepoint != 127) {
+        char enc[4];
+        if (ui->dlg_fresh) {
+            ui->dlg_fresh = 0;
+            ui->dlg_len = 0;
+            ui->dlg_text[0] = '\0';
+        }
+        int n = utf8_encode(codepoint, enc);
+        if (ui->dlg_len + n <= EB_USER_LABEL_MAX) {
+            memcpy(ui->dlg_text + ui->dlg_len, enc, (size_t)n);
+            ui->dlg_len += n;
+            ui->dlg_text[ui->dlg_len] = '\0';
+        }
+    }
     return 1;
 }
 
-int eb_ui_button_count(const eb_ui *ui) { return ui->count; }
+/* ---- test access -------------------------------------------------------- */
 
-const char *eb_ui_button_label(const eb_ui *ui, int index)
-{
-    return index >= 0 && index < ui->count ? ui->preset[index].label : "";
-}
-
+int eb_ui_preset_count(const eb_ui *ui) { return ui->count; }
+const char *eb_ui_preset_label(const eb_ui *ui, int i) { return i >= 0 && i < ui->count ? ui->preset[i].label : ""; }
+int eb_ui_preset_is_user(const eb_ui *ui, int i) { return i >= 0 && i < ui->count ? ui->preset[i].user : 0; }
 int eb_ui_selected(const eb_ui *ui) { return ui->selected; }
+float eb_ui_value(const eb_ui *ui, uint32_t port) { return port < P_COUNT ? ui->cur[port] : 0.0f; }
+int eb_ui_list_rows(const eb_ui *ui) { (void)ui; return LIST_ROWS; }
+int eb_ui_list_first(const eb_ui *ui) { return ui->list_first; }
+const char *eb_ui_toast(const eb_ui *ui) { return ui->toast; }
+const char *eb_ui_dialog_text(const eb_ui *ui) { return ui->dlg ? ui->dlg_text : NULL; }
 
-void eb_ui_button_centre(const eb_ui *ui, int index, double *x, double *y)
+int eb_ui_port_centre(const eb_ui *ui, uint32_t port, int part, double *x, double *y)
 {
-    (void)ui;
-    cell_origin(index, x, y);
-    *x += cell_w() / 2;
-    *y += CELL_H / 2.0;
+    int i = find_port_widget(ui, (int)port);
+    if (i < 0) return 0;
+    const widget *a = &ui->w[i];
+    double w = a->w;
+    double off = 0;
+    if (a->type == W_SEG && eb_meta[port].n_labels > 0) {
+        w = a->w / eb_meta[port].n_labels;
+        off = part * w;
+    }
+    *x = a->x + off + w / 2;
+    *y = a->y + a->h / 2;
+    return 1;
 }
 
-/* ---- drawing ----------------------------------------------------------- */
+int eb_ui_row_centre(const eb_ui *ui, int index, double *x, double *y)
+{
+    const widget *l;
+    list_geometry(ui, &l);
+    if (!l || index < ui->list_first || index >= ui->list_first + LIST_ROWS || index >= ui->count) return 0;
+    *x = l->x + 40;
+    *y = l->y + 2 + (index - ui->list_first) * ROW_H + ROW_H / 2.0;
+    return 1;
+}
+
+int eb_ui_button_centre(const eb_ui *ui, const char *caption, double *x, double *y)
+{
+    for (int i = 0; i < ui->nw; i++) {
+        if (ui->w[i].type == W_BUTTON && strcmp(BUTTON_CAPTION[ui->w[i].action], caption) == 0) {
+            *x = ui->w[i].x + ui->w[i].w / 2;
+            *y = ui->w[i].y + ui->w[i].h / 2;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* ---- drawing ------------------------------------------------------------ */
 
 static void colour(cairo_t *cr, unsigned rgb, double alpha)
 {
@@ -176,19 +751,27 @@ static void round_rect(cairo_t *cr, double x, double y, double w, double h, doub
 /* Shows the text, shortened with an ellipsis if it does not fit in max_w. */
 static void fit_text(cairo_t *cr, const char *text, double x, double y, double max_w)
 {
-    char buf[EB_PRESET_LABEL_MAX + 4];
+    char buf[EB_PRESET_LABEL_MAX + 8];
     snprintf(buf, sizeof buf, "%s", text);
     cairo_text_extents_t ext;
     cairo_text_extents(cr, buf, &ext);
     size_t len = strlen(buf);
     while (ext.x_advance > max_w && len > 1) {
         len--;
-        while (len > 1 && (buf[len] & 0xC0) == 0x80) len--;      /* stay on a UTF-8 boundary */
+        while (len > 1 && (buf[len] & 0xC0) == 0x80) len--;
         memcpy(buf + len, "\xE2\x80\xA6", 4);
         cairo_text_extents(cr, buf, &ext);
     }
     cairo_move_to(cr, x, y);
     cairo_show_text(cr, buf);
+}
+
+static void centred(cairo_t *cr, const char *text, double cx, double y, double max_w)
+{
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, text, &ext);
+    double w = fmin(ext.x_advance, max_w);
+    fit_text(cr, text, cx - w / 2, y, max_w);
 }
 
 static void display_label(const char *label, char *out, size_t cap)
@@ -198,77 +781,263 @@ static void display_label(const char *label, char *out, size_t cap)
     if (n > s && strcmp(out + n - s, SUFFIX) == 0) out[n - s] = '\0';
 }
 
+static void format_value(int port, double v, int with_unit, char *out, size_t cap)
+{
+    const char *u = eb_meta[port].unit;
+    int bipolar = eb_port_min[port] < 0.0f;
+    if (!strcmp(u, "pc")) snprintf(out, cap, with_unit ? "%.0f %%" : "%.0f", v);
+    else if (!strcmp(u, "hz")) {
+        if (v >= 1000.0) snprintf(out, cap, with_unit ? "%.2f kHz" : "%.2fk", v / 1000.0);
+        else snprintf(out, cap, with_unit ? "%.0f Hz" : "%.0f", v);
+    } else if (!strcmp(u, "s")) {
+        if (v < 1.0) snprintf(out, cap, with_unit ? "%.0f ms" : "%.0fms", v * 1000.0);
+        else snprintf(out, cap, with_unit ? "%.2f s" : "%.2fs", v);
+    } else if (!strcmp(u, "db")) {
+        snprintf(out, cap, bipolar ? (with_unit ? "%+.1f dB" : "%+.1f") : (with_unit ? "%.1f dB" : "%.1f"), v);
+    } else {
+        snprintf(out, cap, "%.2f", v);
+    }
+}
+
+static int widget_enabled(const eb_ui *ui, const widget *a)
+{
+    if (a->type == W_BUTTON && a->action == A_DELETE) return ui->selected >= 0 && ui->preset[ui->selected].user;
+    return 1;
+}
+
+static void draw_bar(cairo_t *cr, const widget *a, unsigned fill_colour, double fill_from, double fill_to, int hot)
+{
+    round_rect(cr, a->x, a->y, a->w, a->h, 4);
+    colour(cr, hot ? 0x323946 : 0x2a303a, 1);
+    cairo_fill(cr);
+    double x0 = a->x + fmin(fill_from, fill_to) * a->w, x1 = a->x + fmax(fill_from, fill_to) * a->w;
+    if (x1 - x0 > 0.5) {
+        cairo_save(cr);
+        round_rect(cr, a->x, a->y, a->w, a->h, 4);
+        cairo_clip(cr);
+        colour(cr, fill_colour, 1);
+        cairo_rectangle(cr, x0, a->y, x1 - x0, a->h);
+        cairo_fill(cr);
+        cairo_restore(cr);
+    }
+}
+
+static void draw_widget(eb_ui *ui, cairo_t *cr, int idx)
+{
+    const widget *a = &ui->w[idx];
+    int hot = idx == ui->hover || idx == ui->drag;
+    char buf[64];
+    switch (a->type) {
+    case W_SLIDER: {
+        double v = (double)ui->cur[a->port], f = frac_of(a->port, v);
+        int bipolar = eb_port_min[a->port] < 0.0f && eb_port_max[a->port] > 0.0f;
+        double zero = bipolar ? frac_of(a->port, 0.0) : 0.0;
+        draw_bar(cr, a, 0x3d6fa3, zero, f, hot);
+        cairo_set_font_size(cr, 12);
+        colour(cr, 0xe6ebf2, 1);
+        format_value(a->port, v, !a->cell, buf, sizeof buf);
+        cairo_text_extents_t ext;
+        cairo_text_extents(cr, buf, &ext);
+        if (a->cell) {
+            centred(cr, buf, a->x + a->w / 2, a->y + 14.5, a->w - 6);
+        } else {
+            fit_text(cr, eb_meta[a->port].name, a->x + 7, a->y + 14.5, a->w - ext.x_advance - 20);
+            cairo_move_to(cr, a->x + a->w - 7 - ext.x_advance, a->y + 14.5);
+            cairo_show_text(cr, buf);
+        }
+        break;
+    }
+    case W_METER: {
+        double g = (double)ui->cur[a->port];
+        double c = fmax(-24.0, fmin(24.0, g)) / 48.0;
+        widget bar = *a;
+        draw_bar(cr, &bar, g >= 0 ? 0x3aa675 : 0xd9822b, 0.5, 0.5 + c, 0);
+        colour(cr, 0x5b6676, 1);
+        cairo_rectangle(cr, a->x + a->w / 2 - 0.5, a->y, 1, a->h);
+        cairo_fill(cr);
+        cairo_set_font_size(cr, 12);
+        colour(cr, 0xe6ebf2, 1);
+        snprintf(buf, sizeof buf, "%+.1f", g);
+        centred(cr, buf, a->x + a->w / 2, a->y + 14.5, a->w - 6);
+        break;
+    }
+    case W_TOGGLE: {
+        int on = ui->cur[a->port] >= 0.5f;
+        round_rect(cr, a->x, a->y, a->w, a->h, 5);
+        if (on) colour(cr, a->port == P_BYPASS ? 0xc9742a : 0x2f7d5b, 1);
+        else colour(cr, hot ? 0x3d4655 : 0x2a303a, 1);
+        cairo_fill(cr);
+        cairo_set_font_size(cr, 12);
+        colour(cr, on ? 0xffffff : 0xc2cad6, 1);
+        centred(cr, eb_meta[a->port].name, a->x + a->w / 2, a->y + a->h / 2 + 4.3, a->w - 8);
+        break;
+    }
+    case W_SEG: {
+        int n = eb_meta[a->port].n_labels, sel = (int)(ui->cur[a->port] + 0.5f);
+        double sw = a->w / (n > 0 ? n : 1);
+        cairo_set_font_size(cr, 12);
+        for (int s = 0; s < n; s++) {
+            round_rect(cr, a->x + s * sw + 1, a->y, sw - 2, a->h, 5);
+            colour(cr, s == sel ? 0x2f7d5b : (hot ? 0x323946 : 0x2a303a), 1);
+            cairo_fill(cr);
+            colour(cr, s == sel ? 0xffffff : 0xc2cad6, 1);
+            centred(cr, eb_meta[a->port].labels[s], a->x + s * sw + sw / 2, a->y + a->h / 2 + 4.3, sw - 10);
+        }
+        break;
+    }
+    case W_BUTTON: {
+        int enabled = widget_enabled(ui, a);
+        round_rect(cr, a->x, a->y, a->w, a->h, 5);
+        colour(cr, hot && enabled ? 0x3d4655 : 0x2a303a, 1);
+        cairo_fill(cr);
+        cairo_set_font_size(cr, 12);
+        colour(cr, enabled ? 0xe6ebf2 : 0x6b7483, 1);
+        const char *cap = BUTTON_CAPTION[a->action];
+        if (a->action == A_DELETE && ui->delete_until > 0) cap = "Sure?";
+        centred(cr, cap, a->x + a->w / 2, a->y + a->h / 2 + 4.3, a->w - 8);
+        break;
+    }
+    case W_LIST: {
+        round_rect(cr, a->x, a->y, a->w, a->h, 5);
+        colour(cr, 0x242a32, 1);
+        cairo_fill(cr);
+        cairo_set_font_size(cr, 12.5);
+        for (int r = 0; r < LIST_ROWS; r++) {
+            int p = ui->list_first + r;
+            if (p >= ui->count) break;
+            double ry = a->y + 2 + r * ROW_H;
+            double rw = a->w - 4 - (ui->count > LIST_ROWS ? 10 : 0);
+            if (p == ui->selected || (p == ui->hover)) {
+                round_rect(cr, a->x + 2, ry, rw, ROW_H - 2, 4);
+                colour(cr, p == ui->selected ? 0x2f7d5b : 0x323946, 1);
+                cairo_fill(cr);
+            }
+            colour(cr, p == ui->selected ? 0xffffff : 0xd6dce5, 1);
+            display_label(ui->preset[p].label, buf, sizeof buf);
+            fit_text(cr, buf, a->x + 10, ry + ROW_H / 2.0 + 3.8, rw - 26);
+            if (ui->preset[p].user) {
+                colour(cr, 0xe0a050, 1);
+                cairo_arc(cr, a->x + 2 + rw - 11, ry + (ROW_H - 2) / 2.0, 3, 0, 2 * M_PI);
+                cairo_fill(cr);
+            }
+        }
+        if (ui->count > LIST_ROWS) {
+            double th = a->h - 6, max_first = ui->count - LIST_ROWS;
+            double len = fmax(18.0, th * LIST_ROWS / ui->count);
+            double ty = a->y + 3 + (th - len) * (ui->list_first / max_first);
+            round_rect(cr, a->x + a->w - 9, ty, 5, len, 2.5);
+            colour(cr, 0x5b6676, 1);
+            cairo_fill(cr);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static void draw_dialog(eb_ui *ui, cairo_t *cr)
+{
+    colour(cr, 0x000000, 0.55);
+    cairo_paint(cr);
+    double x, y, w, h;
+    dialog_geometry(&x, &y, &w, &h);
+    round_rect(cr, x, y, w, h, 8);
+    colour(cr, 0x2b313b, 1);
+    cairo_fill(cr);
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 13);
+    colour(cr, 0xe6ebf2, 1);
+    cairo_move_to(cr, x + 16, y + 26);
+    cairo_show_text(cr, "Save preset as");
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+    round_rect(cr, x + 16, y + 38, w - 32, 28, 5);
+    colour(cr, 0x1f2329, 1);
+    cairo_fill(cr);
+    cairo_set_font_size(cr, 13);
+    colour(cr, 0xffffff, 1);
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, ui->dlg_text, &ext);
+    if (ui->dlg_fresh) {
+        colour(cr, 0x2f5d8a, 1);
+        cairo_rectangle(cr, x + 22, y + 43, ext.x_advance + 4, 18);
+        cairo_fill(cr);
+        colour(cr, 0xffffff, 1);
+    }
+    cairo_move_to(cr, x + 24, y + 57);
+    cairo_show_text(cr, ui->dlg_text);
+    if (!ui->dlg_fresh) {
+        colour(cr, 0x7fd0a8, 1);
+        cairo_rectangle(cr, x + 25 + ext.x_advance, y + 44, 1.5, 16);
+        cairo_fill(cr);
+    }
+    double okx, cx, by, bw;
+    dialog_buttons(&okx, &cx, &by, &bw);
+    for (int b = 0; b < 2; b++) {
+        round_rect(cr, b ? cx : okx, by, bw, 26, 5);
+        colour(cr, b ? 0x3a414d : 0x2f7d5b, 1);
+        cairo_fill(cr);
+        colour(cr, 0xffffff, 1);
+        cairo_set_font_size(cr, 12);
+        centred(cr, b ? "Cancel" : "Save", (b ? cx : okx) + bw / 2, by + 17.5, bw - 8);
+    }
+    cairo_set_font_size(cr, 11);
+    colour(cr, 0x9aa5b4, 1);
+    cairo_move_to(cr, x + 16, y + 84);
+    cairo_show_text(cr, "Enter saves, Esc cancels");
+}
+
 void eb_ui_draw(eb_ui *ui, cairo_t *cr)
 {
-    int w, h;
-    eb_ui_size(ui, &w, &h);
     colour(cr, 0x1f2329, 1);
     cairo_paint(cr);
-    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-    cairo_set_font_size(cr, 22);
-    colour(cr, 0xe8ecf1, 1);
-    cairo_move_to(cr, MARGIN, 34);
-    cairo_show_text(cr, "Evenband");
 
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, 16);
+    colour(cr, 0xe8ecf1, 1);
+    cairo_move_to(cr, 10, 24);
+    cairo_show_text(cr, "Evenband");
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
     cairo_set_font_size(cr, 12);
-    char head[160], name[EB_PRESET_LABEL_MAX];
-    if (ui->selected >= 0) {
-        display_label(ui->preset[ui->selected].label, name, sizeof name);
+
+    char name[EB_PRESET_LABEL_MAX + 16], shown[EB_PRESET_LABEL_MAX];
+    if (ui->selected >= 0) display_label(ui->preset[ui->selected].label, name, sizeof name);
+    else if (ui->last_label[0]) {
+        display_label(ui->last_label, shown, sizeof shown);
+        snprintf(name, sizeof name, "%s (modified)", shown);
     } else {
         snprintf(name, sizeof name, "custom settings");
     }
-    snprintf(head, sizeof head, "%s mode  \xC2\xB7  %s", ui->cur[P_MODE] >= 0.5f ? "AGC" : "Balance", name);
-    cairo_text_extents_t ext;
-    cairo_text_extents(cr, head, &ext);
     colour(cr, 0x9aa5b4, 1);
-    cairo_move_to(cr, w - MARGIN - ext.x_advance, 32);
-    cairo_show_text(cr, head);
+    cairo_move_to(cr, 100, 23);
+    cairo_show_text(cr, name);
 
-    cairo_set_font_size(cr, 13);
-    for (int i = 0; i < ui->count; i++) {
-        double x, y;
-        cell_origin(i, &x, &y);
-        int sel = i == ui->selected, hov = i == ui->hover;
-        round_rect(cr, x, y, cell_w(), CELL_H, 6);
-        if (sel) colour(cr, 0x2f7d5b, 1);
-        else if (hov) colour(cr, 0x3d4655, 1);
-        else colour(cr, 0x2a303a, 1);
-        cairo_fill(cr);
-        colour(cr, sel ? 0xffffff : 0xd6dce5, 1);
-        char shown[EB_PRESET_LABEL_MAX];
-        display_label(ui->preset[i].label, shown, sizeof shown);
-        fit_text(cr, shown, x + 10, y + CELL_H / 2.0 + 4.5, cell_w() - 20);
-    }
+    const double right_edge = WIDTH - 10 - 96 - 14;
+    const char *status = ui->toast[0] ? ui->toast : (ui->cur[P_MODE] >= 0.5f ? "AGC mode" : "Balance mode");
+    cairo_text_extents_t ext;
+    cairo_text_extents(cr, status, &ext);
+    colour(cr, ui->toast[0] ? 0xf0c987 : 0x9aa5b4, 1);
+    cairo_move_to(cr, right_edge - ext.x_advance, 23);
+    cairo_show_text(cr, status);
 
-    double top = meter_top(ui);
+    for (int i = 0; i < ui->nw; i++) draw_widget(ui, cr, i);
+
+    /* band table captions and names */
+    static const char *const head[5] = {"Offset dB", "Mix dB", "Attack", "Release", "Gain dB"};
+    static const double head_x[5] = {374 + 52, 484 + 52, 594 + 52, 704 + 52, 814 + 38};
     cairo_set_font_size(cr, 11);
     colour(cr, 0x9aa5b4, 1);
-    cairo_move_to(cr, MARGIN, top - 6);
-    cairo_show_text(cr, "Gain per band, dB");
-    const double bar_x = 110, bar_w = w - bar_x - 70;
-    for (int b = 0; b < 5; b++) {
-        double y = top + b * METER_ROW_H;
-        float g = ui->cur[P_METER_DEEP_BASS + b];
-        double clamped = fmax(-METER_RANGE_DB, fmin(METER_RANGE_DB, (double)g));
-        colour(cr, 0xd6dce5, 1);
-        cairo_set_font_size(cr, 12);
-        cairo_move_to(cr, MARGIN, y + 14);
-        cairo_show_text(cr, BAND_NAME[b]);
-        round_rect(cr, bar_x, y + 3, bar_w, 14, 4);
-        colour(cr, 0x2a303a, 1);
-        cairo_fill(cr);
-        double mid = bar_x + bar_w / 2, len = clamped / METER_RANGE_DB * (bar_w / 2);
-        colour(cr, g >= 0 ? 0x3aa675 : 0xd9822b, 1);
-        cairo_rectangle(cr, len >= 0 ? mid : mid + len, y + 3, fabs(len), 14);
-        cairo_fill(cr);
-        colour(cr, 0x5b6676, 1);
-        cairo_rectangle(cr, mid - 0.5, y + 1, 1, 18);
-        cairo_fill(cr);
-        char val[24];
-        snprintf(val, sizeof val, "%+.1f", (double)g);
-        colour(cr, 0xd6dce5, 1);
-        cairo_move_to(cr, bar_x + bar_w + 10, y + 14);
-        cairo_show_text(cr, val);
-    }
+    for (int c = 0; c < 5; c++) centred(cr, head[c], head_x[c], 176, 100);
+    cairo_set_font_size(cr, 12);
+    colour(cr, 0xd6dce5, 1);
+    for (int b = 0; b < BAND_COUNT; b++) fit_text(cr, BAND_NAME[b], 292, 182 + b * 24 + 14.5, 78);
+
+    char lat[48];
+    snprintf(lat, sizeof lat, "Latency %.0f samples", (double)ui->cur[P_LATENCY]);
+    cairo_set_font_size(cr, 11);
+    colour(cr, 0x7b8696, 1);
+    cairo_move_to(cr, 596, 38 + 4 * 24 + 14);
+    cairo_show_text(cr, lat);
+
+    if (ui->dlg) draw_dialog(ui, cr);
 }

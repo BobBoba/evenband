@@ -54,5 +54,24 @@ class Convert(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(bundle, "presets", "unit-test.ttl")))
 
 
+class AddOne(unittest.TestCase):
+    def test_add_keeps_existing_presets(self):
+        d = tempfile.mkdtemp()
+        bundle = os.path.join(d, "u.lv2")
+        os.makedirs(os.path.join(bundle, "presets"))
+        with open(os.path.join(bundle, "presets", "mine.ttl"), "w") as f:
+            f.write('@prefix lv2: <x> .\n\n<https://github.com/BobBoba/evenband/user/mine>\n    a pset:Preset .\n')
+        for name in ("A", "B"):
+            path = os.path.join(d, name + ".amx")
+            with open(path, "w", encoding="latin-1", newline="") as f:
+                f.write(SAMPLE.replace("Unit Test", "Preset " + name))
+            self.assertEqual(amx2lv2.add_one(path, bundle), 0)
+        files = sorted(os.listdir(os.path.join(bundle, "presets")))
+        self.assertEqual(files, ["mine.ttl", "preset-a.ttl", "preset-b.ttl"])
+        manifest = open(os.path.join(bundle, "manifest.ttl")).read()
+        self.assertEqual(manifest.count("seeAlso"), 3)
+        self.assertIn("evenband/user/mine", manifest)
+
+
 if __name__ == "__main__":
     unittest.main()

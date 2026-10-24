@@ -40,11 +40,12 @@ for i, f in enumerate([120, 500, 2000, 6000], 1):
 ctl("keep_level", "Keep Level", 0, 1, 1, toggled=True, integer=True)
 ctl("limiter", "Limiter", 0, 1, 1, toggled=True, integer=True)
 ctl("ceiling", "Ceiling", -6, 0, -1, "db")
+ctl("bypass", "Bypass", 0, 1, 0, toggled=True, integer=True)
 ctl("xover_type", "Band Overlap", 0, 2, XOVER_DEFAULT, integer=True,
     extra="lv2:portProperty lv2:enumeration ;",
-    points=[("Steep (LR4)", 0), ("Gentle (6 dB/oct)", 1), ("Medium (12 dB/oct)", 2)])
+    points=[("Steep", 0), ("Gentle", 1), ("Medium", 2)])
 ctl("mode", "Mode", 0, 1, 0, integer=True, extra="lv2:portProperty lv2:enumeration ;",
-    points=[("Balance (relative)", 0), ("AGC (absolute targets)", 1)])
+    points=[("Balance", 0), ("AGC", 1)])
 ctl("target", "AGC Target", -40, 0, -12, "db")
 ctl("trim", "AGC Trim", -12, 12, -6, "db")
 ctl("gate", "AGC Gate", -90, -20, -60, "db")
@@ -145,22 +146,40 @@ def emit_header():
     for p in ports:
         print('    "%s",' % p["sym"])
     print("};\n")
-    print("static const float eb_port_default[P_COUNT] = {")
-    for p in ports:
-        print("    %sf," % repr(float(p["df"] if p["kind"] == "ctl" else 0)))
-    print("};\n")
-    print("static const float eb_port_min[P_COUNT] = {")
-    for p in ports:
-        print("    %sf," % repr(float(p["mn"] if p["kind"] == "ctl" else 0)))
-    print("};\n")
-    print("static const float eb_port_max[P_COUNT] = {")
-    for p in ports:
-        print("    %sf," % repr(float(p["mx"] if p["kind"] == "ctl" else 0)))
-    print("};\n")
+
+    def table(name, key, kind="float"):
+        print("static const %s eb_port_%s[P_COUNT] = {" % (kind, name))
+        for p in ports:
+            v = p[key] if p["kind"] == "ctl" else 0
+            print("    %s," % (repr(float(v)) + "f" if kind == "float" else int(v)))
+        print("};\n")
+
+    table("default", "df"); table("min", "mn"); table("max", "mx")
     print("static const unsigned char eb_port_is_output[P_COUNT] = {")
     for p in ports:
         print("    %d," % (1 if p["out"] else 0))
+    print("};\n")
+    print("/* How the user interface presents a port. */")
+    print("typedef struct {")
+    print("    const char *name;")
+    print("    const char *unit;           /* pc, db, hz, s or empty */")
+    print("    unsigned char log;          /* logarithmic slider */")
+    print("    unsigned char toggle;       /* on/off button */")
+    print("    unsigned char integer;")
+    print("    unsigned char in_preset;    /* saved in and applied by presets (bypass is not) */")
+    print("    unsigned char n_labels;     /* enumeration: number of labels */")
+    print("    const char *labels[4];")
+    print("} eb_port_meta;\n")
+    print("static const eb_port_meta eb_meta[P_COUNT] = {")
+    for p in ports:
+        if p["kind"] != "ctl":
+            print('    {"%s", "", 0, 0, 0, 0, 0, {0}},' % p["name"])
+            continue
+        labels = [l for l, _ in (p["points"] or [])]
+        lab = ", ".join('"%s"' % l for l in labels) if labels else "0"
+        print('    {"%s", "%s", %d, %d, %d, %d, %d, {%s}},' % (
+            p["name"], p["unit"] or "", 1 if "logarithmic" in p["extra"] else 0, 1 if p["toggled"] else 0,
+            1 if p["integer"] else 0, 0 if p["sym"] == "bypass" else 1, len(labels), lab))
     print("};\n\n#endif")
-
 
 {"ttl": emit_ttl, "manifest": emit_manifest, "header": emit_header}[MODE]()

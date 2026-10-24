@@ -58,6 +58,10 @@ typedef struct {
 
     /* both modes */
     float mix[EB_BANDS];       /* -24..24 dB: static gain per band, applied after the gain stage */
+
+    /* Non-zero: output the input, delayed by the plugin latency so that switching is
+     * time-aligned. Processing keeps running, so switching back is instant. */
+    int bypass;
 } eb_params;
 
 typedef struct eb_state eb_state;

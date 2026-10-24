@@ -29,7 +29,7 @@ user interface, each interface is skipped when its libraries are missing):
 
 ```
 make                          # builds build/evenband.lv2
-make test                     # 246 measurement checks + converter tests
+make test                     # 252 DSP checks, 94 interface checks, converter tests
 make install                  # to ~/.lv2
 sudo make install LV2DIR=/usr/lib/lv2   # system-wide
 ```
@@ -38,14 +38,29 @@ sudo make install LV2DIR=/usr/lib/lv2   # system-wide
 
 In Carla: Add Plugin → "Evenband" (category dynamics), then open the plugin's own window.
 
-**One-click presets.** The plugin has its own user interface: a grid with every installed
-preset (plus "Balance (default)"). A single click on a button applies that preset; the
-highlighted button is the one that matches the current settings, and five live meters show
-what each band's gain is doing. Presets are found in the usual LV2 folders (`~/.lv2`,
-`/usr/lib/lv2`, or `LV2_PATH`), so converted BreakawayOne presets appear there automatically.
-Carla shows the GTK3 version (a native Wayland window on a Wayland desktop); hosts that only
-speak X11 use the X11 version (through XWayland on Wayland). LV2 has no Wayland-specific
-interface type: X11 and toolkit-embedded interfaces are the only options it defines.
+**The plugin window.** Double-click the plugin in Carla: the window has every setting of the
+plugin as a bar slider (drag, mouse wheel for fine steps, right-click or double-click to reset),
+the two modes, the band-overlap choice and the on/off switches, a table of the five bands
+(offset, mix, attack, release and the live gain meter) and the four crossover frequencies. A
+**Bypass** switch at the top right compares the processed sound with the original: it is
+time-aligned, fades in 10 ms and the processing keeps adapting underneath, so flipping it is a
+fair A/B.
+
+**Presets.** The list on the left shows five rows at a time and scrolls. One click on a name
+applies that preset immediately; the highlighted row is the one that matches the current
+settings. *New* returns to the defaults, *Save* overwrites the user preset you are working on
+(or asks for a name), *Save as...* asks for a name, *Delete* (click twice) removes a user preset,
+*Import...* opens a file chooser (`kdialog` or `zenity`) for a `.ttl` preset or a BreakawayOne
+`.amx`. Your own presets are marked with an orange dot and live in `~/.lv2/evenband-user.lv2`
+(`$EVENBAND_USER_DIR` overrides), in the same LV2 preset format, so other hosts find them after a
+rescan. Importing an `.amx` needs the `evenband-amx2lv2` converter (installed by the Arch package;
+in a source tree it is `tools/amx2lv2.py`). Bypass is never stored in presets.
+
+Installed presets (including converted BreakawayOne ones) are found in the usual LV2 folders
+(`~/.lv2`, `/usr/lib/lv2`, or `LV2_PATH`). Carla shows the GTK3 version of the window (a native
+Wayland window on a Wayland desktop); hosts that only speak X11 use the X11 version (through
+XWayland on Wayland). LV2 has no Wayland-specific interface type: X11 and toolkit-embedded
+interfaces are the only options it defines.
 
 Balance mode (the sliders in the host's own parameter list): **Power** sets how far the balance is corrected (60 % is a good start),
 **Range Boost/Cut** cap the correction per band (the ports allow up to 36 / 60 dB for AGC mode;

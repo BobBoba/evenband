@@ -10,7 +10,7 @@ HAVE_X11  := $(shell pkg-config --exists x11 cairo 2>/dev/null && echo 1)
 HAVE_GTK3 := $(shell pkg-config --exists gtk+-3.0 cairo 2>/dev/null && echo 1)
 UI_FLAGS  := $(if $(HAVE_X11),--x11) $(if $(HAVE_GTK3),--gtk3)
 UI_LIBS   := $(if $(HAVE_X11),$(BUNDLE)/evenband_ui_x11.so) $(if $(HAVE_GTK3),$(BUNDLE)/evenband_ui_gtk3.so)
-UI_CORE   := src/eb_ui_core.c src/eb_presets.c
+UI_CORE   := src/eb_ui_core.c src/eb_presets.c src/eb_spawn.c
 
 all: $(BUNDLE)/evenband.so $(UI_LIBS) $(BUNDLE)/evenband.ttl $(BUNDLE)/manifest.ttl
 
@@ -22,11 +22,11 @@ $(BUNDLE)/evenband.so: src/eb_lv2.c src/eb_dsp.c src/eb_dsp.h build/eb_ports.h
 	mkdir -p $(BUNDLE)
 	$(CC) $(CFLAGS) $(WARN) -Ibuild -fPIC -shared -fvisibility=hidden $(LDFLAGS) -o $@ src/eb_lv2.c src/eb_dsp.c -lm
 
-$(BUNDLE)/evenband_ui_x11.so: src/eb_ui_x11.c $(UI_CORE) src/eb_ui_core.h src/eb_presets.h build/eb_ports.h
+$(BUNDLE)/evenband_ui_x11.so: src/eb_ui_x11.c $(UI_CORE) src/eb_ui_core.h src/eb_presets.h src/eb_spawn.h build/eb_ports.h
 	mkdir -p $(BUNDLE)
 	$(CC) $(CFLAGS) $(WARN) -Ibuild -fPIC -shared -fvisibility=hidden $$(pkg-config --cflags x11 cairo) $(LDFLAGS) -o $@ src/eb_ui_x11.c $(UI_CORE) $$(pkg-config --libs x11 cairo) -lm
 
-$(BUNDLE)/evenband_ui_gtk3.so: src/eb_ui_gtk3.c $(UI_CORE) src/eb_ui_core.h src/eb_presets.h build/eb_ports.h
+$(BUNDLE)/evenband_ui_gtk3.so: src/eb_ui_gtk3.c $(UI_CORE) src/eb_ui_core.h src/eb_presets.h src/eb_spawn.h build/eb_ports.h
 	mkdir -p $(BUNDLE)
 	$(CC) $(CFLAGS) $(WARN) -Ibuild -fPIC -shared -fvisibility=hidden $$(pkg-config --cflags gtk+-3.0 cairo) $(LDFLAGS) -o $@ src/eb_ui_gtk3.c $(UI_CORE) $$(pkg-config --libs gtk+-3.0 cairo) -lm
 
@@ -42,7 +42,7 @@ build/test_dsp: tests/test_dsp.c src/eb_dsp.c src/eb_dsp.h
 	mkdir -p build
 	$(CC) $(CFLAGS) $(WARN) $(LDFLAGS) -o $@ tests/test_dsp.c src/eb_dsp.c -lm
 
-build/test_ui: tests/test_ui.c $(UI_CORE) src/eb_ui_core.h src/eb_presets.h build/eb_ports.h
+build/test_ui: tests/test_ui.c $(UI_CORE) src/eb_ui_core.h src/eb_presets.h src/eb_spawn.h build/eb_ports.h
 	$(CC) $(CFLAGS) $(WARN) -Isrc -Ibuild $$(pkg-config --cflags cairo) $(LDFLAGS) -o $@ tests/test_ui.c $(UI_CORE) $$(pkg-config --libs cairo) -lm
 
 # Developer tools: load a user interface like a host does (see tests/ui_harness.c).

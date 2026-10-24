@@ -61,6 +61,7 @@ static void run(LV2_Handle h, uint32_t n)
     q.keep_level = val(p, P_KEEP_LEVEL, 1.0f) >= 0.5f;
     q.limiter_on = val(p, P_LIMITER, 1.0f) >= 0.5f;
     q.ceiling = val(p, P_CEILING, q.ceiling);
+    q.bypass = val(p, P_BYPASS, 0.0f) >= 0.5f;
     q.xover_type = (int)(val(p, P_XOVER_TYPE, (float)q.xover_type) + 0.5f);
     q.mode = (int)(val(p, P_MODE, (float)q.mode) + 0.5f);
     q.target = val(p, P_TARGET, q.target);

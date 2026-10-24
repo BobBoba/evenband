@@ -69,6 +69,9 @@ struct eb_state {
     uint32_t pos;
     uint64_t n;
     float *dly_l, *dly_r;
+    float *dry_l, *dry_r;       /* the input, delayed like the processed path (for bypass) */
+    double bypass_mix;          /* 0 = processed, 1 = dry, moves with a 10 ms time constant */
+    double bypass_a;
     double *gm;
     double gm_sum;
     double gr_prev;
@@ -212,6 +215,7 @@ void eb_defaults(eb_params *p)
     }
     p->gate = -60.0f;
     for (int i = 0; i < EB_BANDS; i++) p->mix[i] = 0.0f;
+    p->bypass = 0;
 }
 
 /* Returns a copy with every value forced into its valid range. */
@@ -220,6 +224,7 @@ static void sanitize(const eb_state *s, const eb_params *in, eb_params *q)
     eb_params d;
     eb_defaults(&d);
 
+    q->bypass = in->bypass != 0;
     q->mode = in->mode == EB_MODE_AGC ? EB_MODE_AGC : EB_MODE_BALANCE;
     q->power = (float)clampd(in->power, 0.0, 100.0, d.power);
     q->speed = (float)clampd(in->speed, 0.25, 4.0, d.speed);
@@ -334,10 +339,13 @@ eb_state *eb_create(double sample_rate)
 
     s->dly_l = (float *)calloc(s->w, sizeof(float));
     s->dly_r = (float *)calloc(s->w, sizeof(float));
+    s->dry_l = (float *)calloc(s->w, sizeof(float));
+    s->dry_r = (float *)calloc(s->w, sizeof(float));
+    s->bypass_a = 1.0 - exp(-1.0 / (0.010 * sample_rate));
     s->gm = (double *)calloc(s->w, sizeof(double));
     s->dq_idx = (uint64_t *)calloc(s->dq_cap, sizeof(uint64_t));
     s->dq_val = (double *)calloc(s->dq_cap, sizeof(double));
-    if (!s->dly_l || !s->dly_r || !s->gm || !s->dq_idx || !s->dq_val) {
+    if (!s->dly_l || !s->dly_r || !s->dry_l || !s->dry_r || !s->gm || !s->dq_idx || !s->dq_val) {
         eb_destroy(s);
         return NULL;
     }
@@ -350,6 +358,8 @@ void eb_destroy(eb_state *s)
     if (!s) return;
     free(s->dly_l);
     free(s->dly_r);
+    free(s->dry_l);
+    free(s->dry_r);
     free(s->gm);
     free(s->dq_idx);
     free(s->dq_val);
@@ -387,6 +397,9 @@ void eb_reset(eb_state *s)
     s->ctl_count = 0;
     memset(s->dly_l, 0, s->w * sizeof(float));
     memset(s->dly_r, 0, s->w * sizeof(float));
+    memset(s->dry_l, 0, s->w * sizeof(float));
+    memset(s->dry_r, 0, s->w * sizeof(float));
+    s->bypass_mix = 0.0;
     for (uint32_t i = 0; i < s->w; i++) s->gm[i] = 1.0;
     s->gm_sum = (double)s->w;
     s->gr_prev = 1.0;
@@ -596,6 +609,8 @@ void eb_process(eb_state *s, const eb_params *params,
         s->gm[s->pos] = gr;
         s->dly_l[s->pos] = (float)yl;
         s->dly_r[s->pos] = (float)yr;
+        s->dry_l[s->pos] = (float)xl;
+        s->dry_r[s->pos] = (float)xr;
         uint32_t rd = s->pos + 1 == w ? 0 : s->pos + 1;
         double gain = s->gm_sum / (double)w;
         if (gain > 1.0) gain = 1.0;
@@ -605,6 +620,13 @@ void eb_process(eb_state *s, const eb_params *params,
         if (q.limiter_on) {
             if (ol > ceiling) ol = ceiling; else if (ol < -ceiling) ol = -ceiling;
             if (or_ > ceiling) or_ = ceiling; else if (or_ < -ceiling) or_ = -ceiling;
+        }
+        double target = q.bypass ? 1.0 : 0.0;
+        s->bypass_mix += s->bypass_a * (target - s->bypass_mix);
+        if (fabs(target - s->bypass_mix) < 1e-6) s->bypass_mix = target;
+        if (s->bypass_mix > 0.0) {
+            ol += s->bypass_mix * ((double)s->dry_l[rd] - ol);
+            or_ += s->bypass_mix * ((double)s->dry_r[rd] - or_);
         }
         out_l[i] = (float)ol;
         out_r[i] = (float)or_;

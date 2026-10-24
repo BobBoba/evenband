@@ -16,6 +16,7 @@
 typedef struct {
     eb_ui *core;
     GtkWidget *area;
+    guint timer;
     LV2UI_Write_Function write;
     LV2UI_Controller controller;
 } gtk_ui;
@@ -36,21 +37,58 @@ static gboolean on_draw(GtkWidget *w, cairo_t *cr, gpointer data)
 static gboolean on_press(GtkWidget *w, GdkEventButton *e, gpointer data)
 {
     gtk_ui *u = (gtk_ui *)data;
-    if (e->button == 1 && eb_ui_click(u->core, e->x, e->y)) gtk_widget_queue_draw(w);
+    if (e->type != GDK_BUTTON_PRESS || (e->button != 1 && e->button != 3)) return TRUE;
+    gtk_widget_grab_focus(w);
+    if (eb_ui_press(u->core, e->x, e->y, (int)e->button)) gtk_widget_queue_draw(w);
+    return TRUE;
+}
+
+static gboolean on_release(GtkWidget *w, GdkEventButton *e, gpointer data)
+{
+    if (eb_ui_release(((gtk_ui *)data)->core, e->x, e->y, (int)e->button)) gtk_widget_queue_draw(w);
     return TRUE;
 }
 
 static gboolean on_motion(GtkWidget *w, GdkEventMotion *e, gpointer data)
 {
-    if (eb_ui_motion(((gtk_ui *)data)->core, e->x, e->y)) gtk_widget_queue_draw(w);
+    if (eb_ui_motion(((gtk_ui *)data)->core, e->x, e->y, (e->state & GDK_BUTTON1_MASK) != 0)) gtk_widget_queue_draw(w);
     return FALSE;
 }
 
 static gboolean on_leave(GtkWidget *w, GdkEventCrossing *e, gpointer data)
 {
-    (void)e;
-    if (eb_ui_motion(((gtk_ui *)data)->core, -1, -1)) gtk_widget_queue_draw(w);
+    if (eb_ui_motion(((gtk_ui *)data)->core, -1, -1, (e->state & GDK_BUTTON1_MASK) != 0)) gtk_widget_queue_draw(w);
     return FALSE;
+}
+
+static gboolean on_scroll(GtkWidget *w, GdkEventScroll *e, gpointer data)
+{
+    int dir = 0;
+    if (e->direction == GDK_SCROLL_UP) dir = 1;
+    else if (e->direction == GDK_SCROLL_DOWN) dir = -1;
+    else if (e->direction == GDK_SCROLL_SMOOTH) dir = e->delta_y < 0 ? 1 : (e->delta_y > 0 ? -1 : 0);
+    if (dir && eb_ui_scroll(((gtk_ui *)data)->core, e->x, e->y, dir)) gtk_widget_queue_draw(w);
+    return TRUE;
+}
+
+static gboolean on_key(GtkWidget *w, GdkEventKey *e, gpointer data)
+{
+    gtk_ui *u = (gtk_ui *)data;
+    if (!eb_ui_wants_keys(u->core)) return FALSE;     /* leave shortcuts to the host */
+    int dirty;
+    if (e->keyval == GDK_KEY_BackSpace) dirty = eb_ui_key(u->core, 0, EB_KEY_BACKSPACE);
+    else if (e->keyval == GDK_KEY_Return || e->keyval == GDK_KEY_KP_Enter) dirty = eb_ui_key(u->core, 0, EB_KEY_ENTER);
+    else if (e->keyval == GDK_KEY_Escape) dirty = eb_ui_key(u->core, 0, EB_KEY_ESCAPE);
+    else dirty = eb_ui_key(u->core, gdk_keyval_to_unicode(e->keyval), EB_KEY_NONE);
+    if (dirty) gtk_widget_queue_draw(w);
+    return TRUE;
+}
+
+static gboolean on_tick(gpointer data)
+{
+    gtk_ui *u = (gtk_ui *)data;
+    if (eb_ui_poll(u->core)) gtk_widget_queue_draw(u->area);
+    return G_SOURCE_CONTINUE;
 }
 
 static LV2UI_Handle instantiate(const LV2UI_Descriptor *d, const char *uri, const char *bundle,
@@ -71,11 +109,17 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor *d, const char *uri, cons
     eb_ui_size(u->core, &w, &h);
     u->area = gtk_drawing_area_new();
     gtk_widget_set_size_request(u->area, w, h);
-    gtk_widget_add_events(u->area, GDK_BUTTON_PRESS_MASK | GDK_POINTER_MOTION_MASK | GDK_LEAVE_NOTIFY_MASK);
+    gtk_widget_set_can_focus(u->area, TRUE);
+    gtk_widget_add_events(u->area, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK |
+                                       GDK_LEAVE_NOTIFY_MASK | GDK_SCROLL_MASK | GDK_SMOOTH_SCROLL_MASK | GDK_KEY_PRESS_MASK);
     g_signal_connect(u->area, "draw", G_CALLBACK(on_draw), u);
     g_signal_connect(u->area, "button-press-event", G_CALLBACK(on_press), u);
+    g_signal_connect(u->area, "button-release-event", G_CALLBACK(on_release), u);
     g_signal_connect(u->area, "motion-notify-event", G_CALLBACK(on_motion), u);
     g_signal_connect(u->area, "leave-notify-event", G_CALLBACK(on_leave), u);
+    g_signal_connect(u->area, "scroll-event", G_CALLBACK(on_scroll), u);
+    g_signal_connect(u->area, "key-press-event", G_CALLBACK(on_key), u);
+    u->timer = g_timeout_add(50, on_tick, u);
     *widget = (LV2UI_Widget)u->area;
     return u;
 }
@@ -83,6 +127,7 @@ static LV2UI_Handle instantiate(const LV2UI_Descriptor *d, const char *uri, cons
 static void cleanup(LV2UI_Handle h)
 {
     gtk_ui *u = (gtk_ui *)h;
+    if (u->timer) g_source_remove(u->timer);
     eb_ui_free(u->core);
     free(u);
 }

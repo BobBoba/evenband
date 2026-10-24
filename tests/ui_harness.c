@@ -60,7 +60,7 @@ int main(int argc, char **argv)
 #else
     Display *dpy = XOpenDisplay(NULL);
     if (!dpy) { fprintf(stderr, "no display\n"); return 1; }
-    Window top = XCreateSimpleWindow(dpy, DefaultRootWindow(dpy), 20, 20, 700, 640, 0, 0, 0);
+    Window top = XCreateSimpleWindow(dpy, DefaultRootWindow(dpy), 10, 10, 920, 360, 0, 0, 0);
     XMapWindow(dpy, top);
     XFlush(dpy);
     LV2_Feature parent = {LV2_UI__parent, (void *)(uintptr_t)top};

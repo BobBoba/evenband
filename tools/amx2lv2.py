@@ -2,6 +2,7 @@
 """Convert BreakawayOne processing presets (.amx) into Evenband LV2 presets.
 
 usage: amx2lv2.py PRESET_DIR BUNDLE_DIR
+       amx2lv2.py --add FILE.amx BUNDLE_DIR
 
 PRESET_DIR  folder with the .amx files from your own BreakawayOne installation
 BUNDLE_DIR  output bundle, normally ~/.lv2/evenband-presets.lv2. It is created
@@ -116,7 +117,43 @@ def preset_ttl(uri, label, ports):
     return "\n".join(lines) + "\n"
 
 
+def rebuild_manifest(bundle):
+    """Manifest entries for every preset file in the bundle."""
+    pdir = os.path.join(bundle, "presets")
+    entries = []
+    for fn in sorted(os.listdir(pdir)):
+        if not fn.endswith(".ttl"):
+            continue
+        with open(os.path.join(pdir, fn), encoding="utf-8") as f:
+            m = re.search(r"^<([^>]+)>\s*$", f.read(4096), re.M)
+        if m:
+            entries.append(
+                f"<{m.group(1)}>\n    a <http://lv2plug.in/ns/ext/presets#Preset> ;\n"
+                f"    <http://lv2plug.in/ns/lv2core#appliesTo> <{URI}> ;\n"
+                f"    <http://www.w3.org/2000/01/rdf-schema#seeAlso> <presets/{fn}> .\n")
+    with open(os.path.join(bundle, "manifest.ttl"), "w", encoding="utf-8") as f:
+        f.write("\n".join(entries))
+
+
+def add_one(path, bundle):
+    """Convert one .amx and add it to the bundle, keeping what is already there."""
+    vals = parse(path)
+    if "mbagc_ratio" not in vals:
+        print(f"skip {path}: no multiband AGC settings", file=sys.stderr)
+        return 1
+    label = vals.get("presetname") or os.path.splitext(os.path.basename(path))[0]
+    s = slug(label)
+    os.makedirs(os.path.join(bundle, "presets"), exist_ok=True)
+    with open(os.path.join(bundle, "presets", s + ".ttl"), "w", encoding="utf-8") as f:
+        f.write(preset_ttl(PRESET_URI + s, label + " (BreakawayOne)", convert(vals)))
+    rebuild_manifest(bundle)
+    print(f"added {label}")
+    return 0
+
+
 def main(argv):
+    if len(argv) == 4 and argv[1] == "--add":
+        return add_one(argv[2], argv[3])
     if len(argv) != 3:
         print(__doc__)
         return 2

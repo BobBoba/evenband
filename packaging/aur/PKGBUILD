@@ -1,16 +1,18 @@
 # Maintainer: BobBoba <24909845+BobBoba@users.noreply.github.com>
 pkgname=evenband-lv2
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
-pkgdesc='Five-band tonal compressor (LV2) with one-click preset interface: evens out bass/treble balance'
+pkgdesc='Five-band tonal compressor (LV2) with a full control window, preset manager and bypass'
 arch=('x86_64' 'aarch64')
 url='https://github.com/BobBoba/evenband'
 license=('MIT')
 depends=('glibc' 'python' 'cairo' 'libx11' 'gtk3' 'glib2')
 makedepends=('lv2' 'pkgconf')
-optdepends=('carla: host the plugin on its own or in a rack')
+optdepends=('carla: host the plugin on its own or in a rack'
+            'kdialog: file chooser for importing presets (KDE)'
+            'zenity: file chooser for importing presets (GTK)')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('3045a1899f4c7b284683eaf2ad3c5afa4c40141c71878672b78e25d3daf54bd9')
+sha256sums=('SKIP')
 
 build() {
   cd "evenband-$pkgver"

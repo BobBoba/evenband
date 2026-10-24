@@ -66,20 +66,33 @@ gain_i = trim + power · clamp(target + offset_i − level_i, −range_cut, +ran
 
 ## 3. User interface
 
-`src/eb_ui_core.c` (toolkit independent, Cairo) draws a preset grid and five band-gain meters and
-turns a click on a preset into port writes; `eb_ui_x11.c` (ui:X11UI) and `eb_ui_gtk3.c` (ui:Gtk3UI)
-feed it events. Presets are read from the installed LV2 preset files that apply to Evenband
-(`src/eb_presets.c`), so nothing is bundled. The selected button is derived from the current port
-values, so it also reacts to changes made in the host. Verified: parser and core unit tests (32
-checks), both interfaces loaded like a host does (`tests/ui_harness.c`, Xvfb, real mouse clicks)
-and inside Carla's own UI bridge (GTK3), where one click on a preset switched the plugin and the
-meters followed.
+`src/eb_ui_core.c` (toolkit independent, Cairo) draws the whole window and handles the pointer,
+wheel and keyboard: bar sliders for every control port (linear or logarithmic as declared in
+the port list, bipolar bars fill from zero), toggles, segmented choices, the five-row scrolling
+preset list and the New / Save / Save as / Delete / Import buttons, a name dialog and a status
+line. `eb_ui_x11.c` (ui:X11UI) and `eb_ui_gtk3.c` (ui:Gtk3UI) only feed it events and call
+`eb_ui_poll` from a timer. Port names, units and kinds come from the generated `eb_ports.h`
+(`lv2/gen_ttl.py`), so the window cannot drift from the plugin.
+
+Presets are read from the installed LV2 preset files that apply to Evenband
+(`src/eb_presets.c`), so nothing is bundled. User presets are written as ordinary LV2 preset
+files into `~/.lv2/evenband-user.lv2` with a rebuilt manifest; deleting is limited to files
+directly inside that bundle. The file chooser and the converter run as separate processes
+without a shell (`src/eb_spawn.c`), so file names are never interpreted. The selected row is
+derived from the current port values (the preset being worked on wins when several are
+identical), so it also follows changes made in the host. Bypass is not part of a preset.
+
+Verified: 94 interface checks (parser, store, sliders, drag, log scale, toggles, enumerations,
+list scrolling and the five-row limit, save/overwrite/cancel/clash/delete, import with a fake
+chooser and converter, missing helpers, drawing), both interfaces loaded like a host does
+(`tests/ui_harness.c`, Xvfb, real mouse and keyboard events) and inside Carla's own UI bridge
+(GTK3).
 
 ## 4. Ports
 
 Inputs: Power, Speed, Range Boost, Range Cut, Tilt, five band offsets (Deep Bass,
 Warmth, Mids, Presence, Brilliance, ±18 dB), four crossover frequencies, Keep Level,
-Limiter, Ceiling, Band Overlap (crossover shape), Mode, AGC Target, AGC Trim, AGC
+Limiter, Ceiling, Bypass, Band Overlap (crossover shape), Mode, AGC Target, AGC Trim, AGC
 Gate, five AGC attack and five release times, five static band mixes (±24 dB).
 Outputs: Latency (samples, `lv2:latency`, 5 ms) and one gain meter per band.
 Port order is generated from `lv2/gen_ttl.py`; keep it equal to `enum port` in `src/eb_lv2.c`.
@@ -104,14 +117,16 @@ EQ switched off through the application's own state file). The raw captures and 
 
 ## 6. Verification
 
-### 5.1 Unit and measurement tests (`make test`): 246 checks + 4 converter tests, 0 failures
+### 5.1 Unit and measurement tests (`make test`): 252 DSP checks + 94 interface checks + 5 converter tests, 0 failures
 
 LR4 and gentle crossovers sum flat (0.05 dB over 13 tones) and keep pink noise
 unchanged; Balance mode halves/removes a spectral tilt as asked; ranges saturate
 exactly; limiter never exceeds its ceiling under hostile input; NaN/Inf/1e30/DC/silence
 and 300 random or invalid parameter sets stay finite; output is bit-identical for
 any block size; AGC levelling slope, ratio 0, range semantics, attack/release times,
-static mix, gate and 48/192 kHz independence; 5 ms reported latency.
+static mix, gate and 48/192 kHz independence; bypass (bit-exact copy of the input delayed by the
+reported latency, no clicks when toggled every 0.5 s, processing keeps adapting underneath); 5 ms
+reported latency.
 
 ### 5.2 Against BreakawayOne
 
