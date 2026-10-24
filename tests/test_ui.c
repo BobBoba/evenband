@@ -291,6 +291,20 @@ static void test_list_and_sliders(void)
     CHECK(eb_ui_selected(ui) == -1, "changing a parameter must clear the selection");
     eb_ui_port(ui, P_POWER, 60.0f);
     CHECK(eb_ui_selected(ui) == 0, "restoring the value must select the default again");
+
+    /* a saved session (Carla restoring its project): a fresh window fed with the values of the last preset
+     * must highlight it AND scroll the list so that it is visible */
+    int last = eb_ui_preset_count(ui) - 1;
+    eb_ui_row_centre(ui, 0, &x, &y);
+    for (int i = 0; i < 20 && !eb_ui_row_centre(ui, last, &x, &y); i++) eb_ui_scroll(ui, 100, 80, -1);
+    eb_ui_row_centre(ui, last, &x, &y);
+    click(ui, x, y);
+    CHECK(eb_ui_selected(ui) == last, "setup: last preset not selected");
+    eb_ui *fresh = eb_ui_new(fake_write, NULL);
+    for (uint32_t i = 0; i < P_COUNT; i++) eb_ui_port(fresh, i, eb_ui_value(ui, i));
+    CHECK(eb_ui_selected(fresh) >= 0, "restored values must select a preset");
+    CHECK(eb_ui_row_centre(fresh, eb_ui_selected(fresh), &x, &y), "restored preset %d is outside the visible rows (first %d)", eb_ui_selected(fresh), eb_ui_list_first(fresh));
+    eb_ui_free(fresh);
     eb_ui_free(ui);
 }
 

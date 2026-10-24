@@ -316,7 +316,10 @@ void eb_ui_port(eb_ui *ui, uint32_t port, float value)
 {
     if (port >= P_COUNT) return;
     ui->cur[port] = value;
+    int before = ui->selected;
     update_selected(ui);
+    /* The host restored a saved session (or another control changed the values): show the matching preset */
+    if (ui->selected != before && ui->selected >= 0 && ui->drag < 0) ensure_visible(ui, ui->selected);
 }
 
 /* ---- actions ------------------------------------------------------------ */
