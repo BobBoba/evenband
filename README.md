@@ -63,6 +63,7 @@ If you own BreakawayOne (or use its trial), convert your own copies for your own
 make presets    # AMX_DIR=... to point at your proc_presets folder
 ```
 
+(With the AUR package: `evenband-amx2lv2 PRESET_DIR ~/.lv2/evenband-presets.lv2`.)
 They appear in your host as "<name> (BreakawayOne)", from a separate bundle,
 `~/.lv2/evenband-presets.lv2`. Only the multiband AGC and its band mix are translated;
 the noise reduction, wide-band stages, clippers, EQs and stereo enhancer of the original

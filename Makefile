@@ -9,13 +9,13 @@ all: $(BUNDLE)/evenband.so
 
 $(BUNDLE)/evenband.so: src/eb_lv2.c src/eb_dsp.c src/eb_dsp.h lv2/manifest.ttl lv2/gen_ttl.py
 	mkdir -p $(BUNDLE)
-	$(CC) $(CFLAGS) $(WARN) -fPIC -shared -fvisibility=hidden -o $@ src/eb_lv2.c src/eb_dsp.c -lm
+	$(CC) $(CFLAGS) $(WARN) -fPIC -shared -fvisibility=hidden $(LDFLAGS) -o $@ src/eb_lv2.c src/eb_dsp.c -lm
 	cp lv2/manifest.ttl $(BUNDLE)/
 	python3 -I lv2/gen_ttl.py > $(BUNDLE)/evenband.ttl
 
 build/test_dsp: tests/test_dsp.c src/eb_dsp.c src/eb_dsp.h
 	mkdir -p build
-	$(CC) $(CFLAGS) $(WARN) -o $@ tests/test_dsp.c src/eb_dsp.c -lm
+	$(CC) $(CFLAGS) $(WARN) $(LDFLAGS) -o $@ tests/test_dsp.c src/eb_dsp.c -lm
 
 test: build/test_dsp
 	./build/test_dsp

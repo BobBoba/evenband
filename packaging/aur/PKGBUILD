@@ -1,0 +1,26 @@
+# Maintainer: BobBoba <24909845+BobBoba@users.noreply.github.com>
+pkgname=evenband-lv2
+pkgver=1.0.1
+pkgrel=1
+pkgdesc='Five-band tonal compressor (LV2): evens out bass/treble balance, imports BreakawayOne-style settings'
+arch=('x86_64' 'aarch64')
+url='https://github.com/BobBoba/evenband'
+license=('MIT')
+depends=('glibc' 'python')
+makedepends=('lv2')
+optdepends=('carla: host the plugin on its own or in a rack')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "evenband-$pkgver"
+  make
+}
+
+package() {
+  cd "evenband-$pkgver"
+  make DESTDIR="$pkgdir" LV2DIR=/usr/lib/lv2 install
+  install -Dm755 tools/amx2lv2.py "$pkgdir/usr/bin/evenband-amx2lv2"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md SPEC.md -t "$pkgdir/usr/share/doc/$pkgname"
+}
