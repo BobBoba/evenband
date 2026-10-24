@@ -1,6 +1,6 @@
 pkgbase = evenband-lv2
 	pkgdesc = Five-band tonal compressor (LV2) with a knob window, loudness telemetry, preset manager and bypass
-	pkgver = 1.3.0
+	pkgver = 1.3.1
 	pkgrel = 1
 	url = https://github.com/BobBoba/evenband
 	arch = x86_64
@@ -17,7 +17,7 @@ pkgbase = evenband-lv2
 	optdepends = carla: host the plugin on its own or in a rack
 	optdepends = kdialog: file chooser for importing presets (KDE)
 	optdepends = zenity: file chooser for importing presets (GTK)
-	source = evenband-lv2-1.3.0.tar.gz::https://github.com/BobBoba/evenband/archive/refs/tags/v1.3.0.tar.gz
-	sha256sums = 42b779b637250b7872bf33b1ef58723ae41a310e21267ce8e89b8a9ca49d6e39
+	source = evenband-lv2-1.3.1.tar.gz::https://github.com/BobBoba/evenband/archive/refs/tags/v1.3.1.tar.gz
+	sha256sums = 1c283f9e8f91066e3c507fb496e40b77a96021d1d3281001c5b6ba69b9be8b77
 
 pkgname = evenband-lv2
