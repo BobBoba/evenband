@@ -18,9 +18,9 @@ build/eb_ports.h: lv2/gen_ttl.py
 	mkdir -p build
 	python3 -I lv2/gen_ttl.py header > $@
 
-$(BUNDLE)/evenband.so: src/eb_lv2.c src/eb_dsp.c src/eb_dsp.h build/eb_ports.h
+$(BUNDLE)/evenband.so: src/eb_lv2.c src/eb_dsp.c src/eb_loudness.c src/eb_dsp.h src/eb_loudness.h build/eb_ports.h
 	mkdir -p $(BUNDLE)
-	$(CC) $(CFLAGS) $(WARN) -Ibuild -fPIC -shared -fvisibility=hidden $(LDFLAGS) -o $@ src/eb_lv2.c src/eb_dsp.c -lm
+	$(CC) $(CFLAGS) $(WARN) -Ibuild -fPIC -shared -fvisibility=hidden $(LDFLAGS) -o $@ src/eb_lv2.c src/eb_dsp.c src/eb_loudness.c -lm
 
 $(BUNDLE)/evenband_ui_x11.so: src/eb_ui_x11.c $(UI_CORE) src/eb_ui_core.h src/eb_presets.h src/eb_spawn.h build/eb_ports.h
 	mkdir -p $(BUNDLE)
@@ -38,12 +38,15 @@ $(BUNDLE)/manifest.ttl: lv2/gen_ttl.py
 	mkdir -p $(BUNDLE)
 	python3 -I lv2/gen_ttl.py manifest $(UI_FLAGS) > $@
 
-build/test_dsp: tests/test_dsp.c src/eb_dsp.c src/eb_dsp.h
+build/test_dsp: tests/test_dsp.c src/eb_dsp.c src/eb_loudness.c src/eb_dsp.h src/eb_loudness.h
 	mkdir -p build
-	$(CC) $(CFLAGS) $(WARN) $(LDFLAGS) -o $@ tests/test_dsp.c src/eb_dsp.c -lm
+	$(CC) $(CFLAGS) $(WARN) $(LDFLAGS) -o $@ tests/test_dsp.c src/eb_dsp.c src/eb_loudness.c -lm
 
 build/test_ui: tests/test_ui.c $(UI_CORE) src/eb_ui_core.h src/eb_presets.h src/eb_spawn.h build/eb_ports.h
 	$(CC) $(CFLAGS) $(WARN) -Isrc -Ibuild $$(pkg-config --cflags cairo) $(LDFLAGS) -o $@ tests/test_ui.c $(UI_CORE) $$(pkg-config --libs cairo) -lm
+
+build/test_lv2: tests/test_lv2.c build/eb_ports.h
+	$(CC) $(CFLAGS) $(WARN) -Ibuild -o $@ tests/test_lv2.c -ldl -lm
 
 # Developer tools: load a user interface like a host does (see tests/ui_harness.c).
 build/ui_harness_x11: tests/ui_harness.c build/eb_ports.h
@@ -52,9 +55,10 @@ build/ui_harness_x11: tests/ui_harness.c build/eb_ports.h
 build/ui_harness_gtk3: tests/ui_harness.c build/eb_ports.h
 	$(CC) $(CFLAGS) -Wall -DHARNESS_GTK3 -Ibuild $$(pkg-config --cflags gtk+-3.0) -o $@ tests/ui_harness.c $$(pkg-config --libs gtk+-3.0) -ldl
 
-test: build/test_dsp build/test_ui
+test: all build/test_dsp build/test_ui build/test_lv2
 	./build/test_dsp
 	./build/test_ui
+	./build/test_lv2 $(BUNDLE)/evenband.so
 	python3 -I tests/test_amx2lv2.py
 
 install: all

@@ -1,5 +1,6 @@
 /* Evenband: DSP core. See eb_dsp.h and SPEC.md. */
 #include "eb_dsp.h"
+#include "eb_loudness.h"
 
 #include <complex.h>
 #include <math.h>
@@ -69,6 +70,7 @@ struct eb_state {
     uint32_t pos;
     uint64_t n;
     float *dly_l, *dly_r;
+    eb_loud *loud_in, *loud_out;
     float *dry_l, *dry_r;       /* the input, delayed like the processed path (for bypass) */
     double bypass_mix;          /* 0 = processed, 1 = dry, moves with a 10 ms time constant */
     double bypass_a;
@@ -341,11 +343,13 @@ eb_state *eb_create(double sample_rate)
     s->dly_r = (float *)calloc(s->w, sizeof(float));
     s->dry_l = (float *)calloc(s->w, sizeof(float));
     s->dry_r = (float *)calloc(s->w, sizeof(float));
+    s->loud_in = eb_loud_create(sample_rate);
+    s->loud_out = eb_loud_create(sample_rate);
     s->bypass_a = 1.0 - exp(-1.0 / (0.010 * sample_rate));
     s->gm = (double *)calloc(s->w, sizeof(double));
     s->dq_idx = (uint64_t *)calloc(s->dq_cap, sizeof(uint64_t));
     s->dq_val = (double *)calloc(s->dq_cap, sizeof(double));
-    if (!s->dly_l || !s->dly_r || !s->dry_l || !s->dry_r || !s->gm || !s->dq_idx || !s->dq_val) {
+    if (!s->loud_in || !s->loud_out || !s->dly_l || !s->dly_r || !s->dry_l || !s->dry_r || !s->gm || !s->dq_idx || !s->dq_val) {
         eb_destroy(s);
         return NULL;
     }
@@ -360,6 +364,8 @@ void eb_destroy(eb_state *s)
     free(s->dly_r);
     free(s->dry_l);
     free(s->dry_r);
+    eb_loud_free(s->loud_in);
+    eb_loud_free(s->loud_out);
     free(s->gm);
     free(s->dq_idx);
     free(s->dq_val);
@@ -400,6 +406,8 @@ void eb_reset(eb_state *s)
     memset(s->dry_l, 0, s->w * sizeof(float));
     memset(s->dry_r, 0, s->w * sizeof(float));
     s->bypass_mix = 0.0;
+    eb_loud_reset(s->loud_in);
+    eb_loud_reset(s->loud_out);
     for (uint32_t i = 0; i < s->w; i++) s->gm[i] = 1.0;
     s->gm_sum = (double)s->w;
     s->gr_prev = 1.0;
@@ -409,6 +417,18 @@ void eb_reset(eb_state *s)
 }
 
 uint32_t eb_latency(const eb_state *s) { return s->w - 1; }
+
+void eb_loudness_get(const eb_state *s, eb_loudness *out)
+{
+    eb_loud_get(s->loud_in, &out->in_momentary, &out->in_short, &out->in_integrated);
+    eb_loud_get(s->loud_out, &out->out_momentary, &out->out_short, &out->out_integrated);
+}
+
+void eb_loudness_reset(eb_state *s)
+{
+    eb_loud_reset(s->loud_in);
+    eb_loud_reset(s->loud_out);
+}
 
 float eb_band_gain_db(const eb_state *s, int band)
 {
@@ -569,6 +589,7 @@ void eb_process(eb_state *s, const eb_params *params,
         }
         s->ctl_count--;
 
+        eb_loud_push(s->loud_in, xl, xr);
         double yl = 0.0, yr = 0.0;
         for (int b = 0; b < EB_BANDS; b++) {
             double pw = 0.5 * (bl[b] * bl[b] + br[b] * br[b]);
@@ -630,6 +651,7 @@ void eb_process(eb_state *s, const eb_params *params,
         }
         out_l[i] = (float)ol;
         out_r[i] = (float)or_;
+        eb_loud_push(s->loud_out, (double)out_l[i], (double)out_r[i]);
 
         s->pos = rd;
         s->n++;

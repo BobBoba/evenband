@@ -67,8 +67,11 @@ gain_i = trim + power · clamp(target + offset_i − level_i, −range_cut, +ran
 ## 3. User interface
 
 `src/eb_ui_core.c` (toolkit independent, Cairo) draws the whole window and handles the pointer,
-wheel and keyboard: bar sliders for every control port (linear or logarithmic as declared in
-the port list, bipolar bars fill from zero), toggles, segmented choices, the five-row scrolling
+wheel and keyboard: rotary knobs for every control port (270 degree sweep, vertical drag at 0.5 % of the range per pixel, linear or
+logarithmic as declared in the port list, bipolar ranges fill from zero), a Settings switch (off by default:
+only the preset list, Bypass and a wide telemetry view are shown; on: knobs and band table, telemetry in the
+right-hand column), telemetry with input and output loudness (BS.1770 / EBU R128 K-weighting: momentary 400 ms,
+short-term 3 s, integrated with absolute and relative gating), per-band gain bars and a two-minute loudness history, toggles, segmented choices, the five-row scrolling
 preset list and the New / Save / Save as / Delete / Import buttons, a name dialog and a status
 line. `eb_ui_x11.c` (ui:X11UI) and `eb_ui_gtk3.c` (ui:Gtk3UI) only feed it events and call
 `eb_ui_poll` from a timer. Port names, units and kinds come from the generated `eb_ports.h`
@@ -82,7 +85,7 @@ without a shell (`src/eb_spawn.c`), so file names are never interpreted. The sel
 derived from the current port values (the preset being worked on wins when several are
 identical), so it also follows changes made in the host. Bypass is not part of a preset.
 
-Verified: 94 interface checks (parser, store, sliders, drag, log scale, toggles, enumerations,
+Verified: 109 interface checks (parser, store, knobs, drag, log scale, Settings switch, loudness history and reset, toggles, enumerations,
 list scrolling and the five-row limit, save/overwrite/cancel/clash/delete, import with a fake
 chooser and converter, missing helpers, drawing), both interfaces loaded like a host does
 (`tests/ui_harness.c`, Xvfb, real mouse and keyboard events) and inside Carla's own UI bridge
@@ -94,7 +97,9 @@ Inputs: Power, Speed, Range Boost, Range Cut, Tilt, five band offsets (Deep Bass
 Warmth, Mids, Presence, Brilliance, ±18 dB), four crossover frequencies, Keep Level,
 Limiter, Ceiling, Bypass, Band Overlap (crossover shape), Mode, AGC Target, AGC Trim, AGC
 Gate, five AGC attack and five release times, five static band mixes (±24 dB).
-Outputs: Latency (samples, `lv2:latency`, 5 ms) and one gain meter per band.
+Outputs: Latency (samples, `lv2:latency`, 5 ms), one gain meter per band, and six loudness readings
+(input and output, each momentary, short-term, integrated, in LUFS, −120 = nothing measured yet). 
+"Reset Loudness" counter (not stored in presets) restarts the integrated measurement when it changes.
 Port order is generated from `lv2/gen_ttl.py`; keep it equal to `enum port` in `src/eb_lv2.c`.
 
 ## 5. Calibration: what was measured
@@ -117,7 +122,7 @@ EQ switched off through the application's own state file). The raw captures and 
 
 ## 6. Verification
 
-### 5.1 Unit and measurement tests (`make test`): 252 DSP checks + 94 interface checks + 5 converter tests, 0 failures
+### 5.1 Unit and measurement tests (`make test`): 271 DSP checks + 109 interface checks + 6 plugin-binary checks + 5 converter tests, 0 failures
 
 LR4 and gentle crossovers sum flat (0.05 dB over 13 tones) and keep pink noise
 unchanged; Balance mode halves/removes a spectral tilt as asked; ranges saturate

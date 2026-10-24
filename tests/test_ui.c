@@ -207,6 +207,7 @@ static void test_list_and_sliders(void)
     }
 
     eb_ui *ui = eb_ui_new(fake_write, NULL);
+    click_button(ui, "Settings");
     CHECK(eb_ui_preset_count(ui) == 9, "expected 9 entries (default + 8), got %d", eb_ui_preset_count(ui));
     CHECK(strcmp(eb_ui_preset_label(ui, 0), "Balance (default)") == 0, "first entry '%s'", eb_ui_preset_label(ui, 0));
     CHECK(strcmp(eb_ui_preset_label(ui, 1), "Alpha (BreakawayOne)") == 0, "not sorted: '%s'", eb_ui_preset_label(ui, 1));
@@ -229,37 +230,44 @@ static void test_list_and_sliders(void)
     CHECK(strcmp(eb_ui_preset_label(ui, eb_ui_selected(ui)), "Zeta (BreakawayOne)") == 0, "clicked row not applied");
     CHECK(written[P_POWER] == 80.0f && written[P_MODE] == 1.0f && write_count == 3, "preset values wrong (%d writes)", write_count);
 
-    /* sliders: press, drag, release, reset, wheel */
+    /* knobs: dragging up or down turns them, 0.5% of the range per pixel */
     double sx, sy;
     eb_ui_port_centre(ui, P_POWER, 0, &sx, &sy);
-    double half = 294 / 2.0;
-    eb_ui_press(ui, sx - half + 0.3 * 294, sy, 1);
-    CHECK(fabsf(eb_ui_value(ui, P_POWER) - 30.0f) < 1.0f, "press at 30%% set power %g", (double)eb_ui_value(ui, P_POWER));
-    eb_ui_motion(ui, sx - half + 0.8 * 294, sy + 40, 1);
-    CHECK(fabsf(eb_ui_value(ui, P_POWER) - 80.0f) < 1.0f, "drag to 80%% set power %g (vertical drift must not matter)", (double)eb_ui_value(ui, P_POWER));
-    eb_ui_motion(ui, sx - half + 5 * 294, sy, 1);
+    eb_ui_press(ui, sx, sy, 1);
+    float p0 = eb_ui_value(ui, P_POWER);
+    CHECK(p0 == 80.0f, "a plain press must not move the knob, got %g", (double)p0);
+    eb_ui_motion(ui, sx + 30, sy - 20, 1);
+    CHECK(fabsf(eb_ui_value(ui, P_POWER) - 90.0f) < 0.01f, "20 px up must add 10, got %g (sideways drift must not matter)", (double)eb_ui_value(ui, P_POWER));
+    eb_ui_motion(ui, sx, sy + 40, 1);
+    CHECK(fabsf(eb_ui_value(ui, P_POWER) - 60.0f) < 0.01f, "40 px down from the start must give 60, got %g", (double)eb_ui_value(ui, P_POWER));
+    eb_ui_motion(ui, sx, sy - 500, 1);
     CHECK(eb_ui_value(ui, P_POWER) == 100.0f, "drag beyond the end must clamp, got %g", (double)eb_ui_value(ui, P_POWER));
+    eb_ui_motion(ui, sx, sy + 900, 1);
+    CHECK(eb_ui_value(ui, P_POWER) == 0.0f, "drag beyond the start must clamp, got %g", (double)eb_ui_value(ui, P_POWER));
     eb_ui_release(ui, sx, sy, 1);
     write_count = 0;
-    eb_ui_motion(ui, sx - half, sy, 0);
+    eb_ui_motion(ui, sx, sy - 30, 0);
     CHECK(write_count == 0, "moving without a button changed a value");
     eb_ui_press(ui, sx, sy, 3);
     CHECK(eb_ui_value(ui, P_POWER) == 60.0f, "right click must reset to the default 60, got %g", (double)eb_ui_value(ui, P_POWER));
     eb_ui_scroll(ui, sx, sy, 1);
     CHECK(fabsf(eb_ui_value(ui, P_POWER) - 62.0f) < 0.01f, "wheel step: %g", (double)eb_ui_value(ui, P_POWER));
-    eb_ui_press(ui, sx - half + 0.2 * 294, sy, 1);
-    eb_ui_release(ui, sx, sy, 1);
+    eb_ui_press(ui, sx, sy, 1);
+    eb_ui_motion(ui, sx, sy - 10, 1);
+    eb_ui_release(ui, sx, sy - 10, 1);
     eb_ui_press(ui, sx, sy, 1);                       /* quick second press = double click */
     eb_ui_release(ui, sx, sy, 1);
     CHECK(eb_ui_value(ui, P_POWER) == 60.0f, "double click must reset, got %g", (double)eb_ui_value(ui, P_POWER));
 
-    /* logarithmic slider: the middle of the track is the geometric mean */
+    /* logarithmic knob: half a turn is the geometric mean, so the wheel moves it by a ratio */
     double lx, ly;
     eb_ui_port_centre(ui, P_XOVER1, 0, &lx, &ly);
-    eb_ui_press(ui, lx, ly, 1);
-    eb_ui_release(ui, lx, ly, 1);
-    double expect = sqrt((double)eb_port_min[P_XOVER1] * (double)eb_port_max[P_XOVER1]);
-    CHECK(fabs(eb_ui_value(ui, P_XOVER1) / expect - 1.0) < 0.03, "log slider centre %g, expected %g", (double)eb_ui_value(ui, P_XOVER1), expect);
+    float l0 = eb_ui_value(ui, P_XOVER1);
+    eb_ui_scroll(ui, lx, ly, 1);
+    float l1 = eb_ui_value(ui, P_XOVER1);
+    eb_ui_scroll(ui, lx, ly, 1);
+    float l2 = eb_ui_value(ui, P_XOVER1);
+    CHECK(l1 > l0 && l2 > l1 && fabs((double)l2 / l1 - (double)l1 / l0) < 0.02, "log knob steps %g %g %g are not geometric", (double)l0, (double)l1, (double)l2);
 
     /* toggles, enumerations, bypass */
     float lim = eb_ui_value(ui, P_LIMITER);
@@ -290,6 +298,7 @@ static void test_save_delete_import(void)
 {
     printf("[ui: save, delete, import]\n");
     eb_ui *ui = eb_ui_new(fake_write, NULL);
+    click_button(ui, "Settings");
     int base = eb_ui_preset_count(ui);
 
     /* save as: type a name, backspace, enter */
@@ -332,8 +341,9 @@ static void test_save_delete_import(void)
 
     /* save again overwrites without a dialog */
     eb_ui_port_centre(ui, P_RANGE_CUT, 0, &x, &y);
-    eb_ui_press(ui, x + 60, y, 1);
-    eb_ui_release(ui, x, y, 1);
+    eb_ui_press(ui, x, y, 1);
+    eb_ui_motion(ui, x, y - 30, 1);
+    eb_ui_release(ui, x, y - 30, 1);
     float cut2 = eb_ui_value(ui, P_RANGE_CUT);
     CHECK(cut2 != cut, "test setup: value did not change");
     click_button(ui, "Save");
@@ -431,9 +441,31 @@ static void test_draw(void)
     CHECK(w >= 800 && w <= 1000 && h >= 300 && h <= 420, "odd size %dx%d", w, h);
     cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
     cairo_t *cr = cairo_create(s);
+    double hx, hy;
+    CHECK(!eb_ui_port_centre(ui, P_POWER, 0, &hx, &hy), "settings must be hidden by default");
+    CHECK(eb_ui_button_centre(ui, "Reset integrated", &hx, &hy), "telemetry reset button missing while settings are hidden");
+    eb_ui_draw(ui, cr);                                       /* wide telemetry layout */
+    click_button(ui, "Settings");
+    CHECK(eb_ui_port_centre(ui, P_POWER, 0, &hx, &hy), "Settings button must show the knobs");
+    click_button(ui, "Settings");
+    CHECK(!eb_ui_port_centre(ui, P_POWER, 0, &hx, &hy), "Settings button must hide the knobs again");
+    click_button(ui, "Settings");
     eb_ui_port(ui, P_METER_WARMTH, 6.0f);
     eb_ui_port(ui, P_METER_MIDS, -9.0f);
+    eb_ui_port(ui, P_LUFS_IN_M, -23.4f);
+    eb_ui_port(ui, P_LUFS_OUT_M, -14.2f);
+    eb_ui_port(ui, P_LUFS_IN_I, -120.0f);                    /* nothing measured yet: must draw a dash, not crash */
     eb_ui_draw(ui, cr);
+
+    /* loudness history grows with time and the reset button restarts the measurement */
+    for (int i = 0; i < 70; i++) { eb_ui_poll(ui); usleep(10000); }
+    CHECK(eb_ui_history_len(ui) >= 1, "no history points after 0.7 s: %d", eb_ui_history_len(ui));
+    eb_ui_draw(ui, cr);
+    write_count = 0;
+    float r0 = written[P_METER_RESET];
+    click_button(ui, "Reset integrated");
+    CHECK(write_count == 1 && written[P_METER_RESET] == r0 + 1.0f, "reset button must bump the counter once (%d writes, %g -> %g)", write_count, (double)r0, (double)written[P_METER_RESET]);
+    CHECK(eb_ui_history_len(ui) == 0, "history must restart after reset, got %d", eb_ui_history_len(ui));
     click_button(ui, "Save as...");
     eb_ui_draw(ui, cr);                                       /* with the dialog */
     cairo_surface_flush(s);

@@ -79,6 +79,18 @@ void eb_process(eb_state *s, const eb_params *p,
                 float *out_l, float *out_r, uint32_t n);
 
 uint32_t eb_latency(const eb_state *s);
+
+/* Loudness of what goes in and what comes out (after bypass and limiter), in LUFS per
+ * ITU-R BS.1770-4: momentary (400 ms), short-term (3 s) and gated integrated. -120 means
+ * nothing measured yet. */
+typedef struct {
+    float in_momentary, in_short, in_integrated;
+    float out_momentary, out_short, out_integrated;
+} eb_loudness;
+
+void eb_loudness_get(const eb_state *s, eb_loudness *out);
+/* Restarts the integrated measurement and the short windows of both meters. */
+void eb_loudness_reset(eb_state *s);
 /* Current gain of a band in dB, including make-up gain. */
 float eb_band_gain_db(const eb_state *s, int band);
 

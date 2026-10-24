@@ -53,9 +53,11 @@ const char *eb_ui_preset_label(const eb_ui *ui, int index);
 int eb_ui_preset_is_user(const eb_ui *ui, int index);
 /* Index of the preset matching the current port values, or -1. */
 int eb_ui_selected(const eb_ui *ui);
+/* Points in the loudness history (one per 0.5 s while the interface is open). */
+int eb_ui_history_len(const eb_ui *ui);
 /* Current value of a port as the interface sees it. */
 float eb_ui_value(const eb_ui *ui, uint32_t port);
-/* Centre of the control for a port (slider, toggle, meter), or the centre of one segment of
+/* Centre of the control for a port (knob, toggle), or the centre of one segment of
  * an enumeration (segment index in `part`). Returns 0 when the port has no control. */
 int eb_ui_port_centre(const eb_ui *ui, uint32_t port, int part, double *x, double *y);
 /* Centre of the row of a preset in the list, and whether that row is currently visible. */

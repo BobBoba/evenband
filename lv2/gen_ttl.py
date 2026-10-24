@@ -20,6 +20,7 @@ def audio(sym, name, out=False):
 
 
 def ctl(sym, name, mn, mx, df, unit=None, toggled=False, integer=False, out=False, extra="", points=None):
+    # unit "lufs" is only a display hint for the user interface; LV2 has no such unit
     ports.append(dict(kind="ctl", sym=sym, name=name, out=out, mn=mn, mx=mx, df=df, unit=unit,
                       toggled=toggled, integer=integer, extra=extra, points=points))
 
@@ -57,12 +58,17 @@ for i, nm in enumerate(BAND_NAMES):
     ctl("rel%d" % i, "AGC Release " + nm, 0.005, 60, 1.0, "s", extra=LOG)
 for i, nm in enumerate(BAND_NAMES):
     ctl("mix%d" % i, "Mix " + nm, -24, 24, 0, "db")
+ctl("meter_reset", "Reset Loudness", 0, 1000000, 0, integer=True)
 ctl("latency", "Latency", 0, 192000, 0, integer=True, out=True,
     extra="lv2:designation lv2:latency ;\n        lv2:portProperty lv2:reportsLatency ;")
 for sym, nm in [("meter_deep_bass", "Gain Deep Bass"), ("meter_warmth", "Gain Warmth"),
                 ("meter_mids", "Gain Mids"), ("meter_presence", "Gain Presence"),
                 ("meter_brilliance", "Gain Brilliance")]:
     ctl(sym, nm, -40, 40, 0, "db", out=True)
+for sym, nm in [("lufs_in_m", "Input Momentary LUFS"), ("lufs_in_s", "Input Short-term LUFS"),
+                ("lufs_in_i", "Input Integrated LUFS"), ("lufs_out_m", "Output Momentary LUFS"),
+                ("lufs_out_s", "Output Short-term LUFS"), ("lufs_out_i", "Output Integrated LUFS")]:
+    ctl(sym, nm, -120, 20, -120, "lufs", out=True)
 
 PREFIXES = """@prefix lv2:   <http://lv2plug.in/ns/lv2core#> .
 @prefix doap:  <http://usefulinc.com/ns/doap#> .
@@ -100,7 +106,7 @@ def emit_ttl():
                 s += "        lv2:portProperty lv2:toggled ;\n"
             if p["integer"]:
                 s += "        lv2:portProperty lv2:integer ;\n"
-            if p["unit"]:
+            if p["unit"] and p["unit"] != "lufs":
                 s += "        units:unit units:%s ;\n" % p["unit"]
             if p["extra"]:
                 s += "        " + p["extra"] + "\n"
@@ -179,7 +185,7 @@ def emit_header():
         lab = ", ".join('"%s"' % l for l in labels) if labels else "0"
         print('    {"%s", "%s", %d, %d, %d, %d, %d, {%s}},' % (
             p["name"], p["unit"] or "", 1 if "logarithmic" in p["extra"] else 0, 1 if p["toggled"] else 0,
-            1 if p["integer"] else 0, 0 if p["sym"] == "bypass" else 1, len(labels), lab))
+            1 if p["integer"] else 0, 0 if p["sym"] in ("bypass", "meter_reset") else 1, len(labels), lab))
     print("};\n\n#endif")
 
 {"ttl": emit_ttl, "manifest": emit_manifest, "header": emit_header}[MODE]()

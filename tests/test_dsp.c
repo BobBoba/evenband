@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "../src/eb_dsp.h"
+#include "../src/eb_loudness.h"
 
 #define PI 3.14159265358979323846
 
@@ -714,6 +715,101 @@ static void test_bypass(double sr)
     free(in); free(out); free(sine); free(buf); free(noise); free(res);
 }
 
+
+/* ---- loudness meter (BS.1770 / EBU R128) ------------------------------ */
+
+static void sine_into(eb_loud *m, double sr, double seconds, double hz, double peak_db, int left, int right)
+{
+    size_t n = (size_t)(sr * seconds);
+    double a = pow(10.0, peak_db / 20.0);
+    for (size_t i = 0; i < n; i++) {
+        double v = a * sin(2.0 * PI * hz * (double)i / sr);
+        eb_loud_push(m, left ? v : 0.0, right ? v : 0.0);
+    }
+}
+
+static void test_loudness(void)
+{
+    printf("[loudness]\n");
+    const double rates[4] = {44100.0, 48000.0, 96000.0, 192000.0};
+    for (int r = 0; r < 4; r++) {
+        /* EBU Tech 3341 case 1: stereo 997 Hz sine at -23 dBFS reads -23.0 LUFS in all three */
+        eb_loud *m = eb_loud_create(rates[r]);
+        float mo, sh, in;
+        sine_into(m, rates[r], 25.0, 997.0, -23.0, 1, 1);
+        eb_loud_get(m, &mo, &sh, &in);
+        CHECK(fabsf(mo + 23.0f) < 0.1f && fabsf(sh + 23.0f) < 0.1f && fabsf(in + 23.0f) < 0.1f,
+              "%.0f Hz rate: -23 dBFS stereo sine reads M %.2f S %.2f I %.2f LUFS", rates[r], (double)mo, (double)sh, (double)in);
+
+        /* one channel only carries half the power: 3 dB less */
+        eb_loud_reset(m);
+        sine_into(m, rates[r], 5.0, 997.0, -20.0, 1, 0);
+        eb_loud_get(m, &mo, &sh, &in);
+        CHECK(fabsf(mo + 23.0f) < 0.1f, "%.0f Hz rate: left-only -20 dBFS sine reads %.2f LUFS, expected -23", rates[r], (double)mo);
+        eb_loud_free(m);
+    }
+
+    eb_loud *m = eb_loud_create(48000.0);
+    float mo, sh, in;
+    eb_loud_get(m, &mo, &sh, &in);
+    CHECK(mo == EB_LOUD_NONE && sh == EB_LOUD_NONE && in == EB_LOUD_NONE, "fresh meter must report nothing");
+    for (int i = 0; i < 48000 * 5; i++) eb_loud_push(m, 0.0, 0.0);
+    eb_loud_get(m, &mo, &sh, &in);
+    CHECK(mo == EB_LOUD_NONE && in == EB_LOUD_NONE, "silence must read nothing, got M %.1f I %.1f", (double)mo, (double)in);
+
+    /* gating: 10 s at -23 then 20 s that is 27 LU quieter (above the absolute gate, below the relative one) */
+    eb_loud_reset(m);
+    sine_into(m, 48000.0, 10.0, 997.0, -23.0, 1, 1);
+    sine_into(m, 48000.0, 20.0, 997.0, -50.0, 1, 1);
+    eb_loud_get(m, &mo, &sh, &in);
+    CHECK(fabsf(in + 23.0f) < 0.15f, "relative gate: integrated %.2f LUFS, expected -23 (quiet part must not count)", (double)in);
+    CHECK(fabsf(sh + 50.0f) < 0.3f && fabsf(mo + 50.0f) < 0.3f, "windows after the quiet part: M %.2f S %.2f, expected -50", (double)mo, (double)sh);
+
+    /* absolute gate: material below -70 LUFS never counts */
+    eb_loud_reset(m);
+    sine_into(m, 48000.0, 10.0, 997.0, -80.0, 1, 1);
+    eb_loud_get(m, &mo, &sh, &in);
+    CHECK(in == EB_LOUD_NONE, "absolute gate: -80 LUFS material produced an integrated value %.1f", (double)in);
+
+    eb_loud_reset(m);
+    eb_loud_get(m, &mo, &sh, &in);
+    CHECK(mo == EB_LOUD_NONE && sh == EB_LOUD_NONE && in == EB_LOUD_NONE, "reset must clear every value");
+    eb_loud_push(m, NAN, INFINITY);
+    sine_into(m, 48000.0, 1.0, 997.0, -23.0, 1, 1);
+    eb_loud_get(m, &mo, &sh, &in);
+    CHECK(isfinite(mo) && isfinite(in), "bad samples must not poison the meter");
+    eb_loud_free(m);
+
+    /* through the plugin: input and output meters, bypass makes them agree, reset restarts */
+    const double sr = 48000.0;
+    size_t n = (size_t)(sr * 8.0);
+    float *in_buf = malloc(n * sizeof *in_buf), *out_buf = malloc(n * sizeof *out_buf);
+    for (size_t i = 0; i < n; i++) in_buf[i] = (float)(pow(10.0, -23.0 / 20.0) * sin(2.0 * PI * 997.0 * (double)i / sr));
+    eb_params p;
+    eb_defaults(&p);
+    p.bypass = 1;
+    eb_state *s = eb_create(sr);
+    run_all(s, &p, in_buf, out_buf, n);
+    eb_loudness l;
+    eb_loudness_get(s, &l);
+    CHECK(fabsf(l.in_momentary + 23.0f) < 0.15f && fabsf(l.in_short + 23.0f) < 0.15f && fabsf(l.in_integrated + 23.0f) < 0.15f,
+          "plugin input meter: %.2f / %.2f / %.2f", (double)l.in_momentary, (double)l.in_short, (double)l.in_integrated);
+    CHECK(fabsf(l.out_momentary - l.in_momentary) < 0.1f && fabsf(l.out_integrated - l.in_integrated) < 0.1f,
+          "bypassed output must read like the input: %.2f vs %.2f", (double)l.out_momentary, (double)l.in_momentary);
+    p.bypass = 0;
+    p.mode = EB_MODE_AGC;
+    p.power = 100.0f; p.range_boost = 24.0f; p.range_cut = 40.0f; p.trim = -6.0f; p.target = -12.0f; p.gate = -90.0f;
+    run_all(s, &p, in_buf, out_buf, n);
+    eb_loudness_get(s, &l);
+    CHECK(l.out_momentary > l.in_momentary + 3.0f, "the AGC at this level must raise the loudness: in %.1f out %.1f",
+          (double)l.in_momentary, (double)l.out_momentary);
+    eb_loudness_reset(s);
+    eb_loudness_get(s, &l);
+    CHECK(l.in_integrated == EB_LOUD_NONE && l.out_integrated == EB_LOUD_NONE && l.in_short == EB_LOUD_NONE, "plugin reset did not clear the meters");
+    eb_destroy(s);
+    free(in_buf); free(out_buf);
+}
+
 int main(void)
 {
     const double rates[2] = {48000.0, 192000.0};
@@ -749,6 +845,7 @@ int main(void)
     }
     test_agc_rate_independence();
     for (int r = 0; r < 2; r++) test_bypass(rates[r]);
+    test_loudness();
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

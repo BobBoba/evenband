@@ -9,6 +9,7 @@
 
 typedef struct {
     eb_state *dsp;
+    float last_reset;
     const float *port[P_COUNT];
     float *out_ctl[P_COUNT];
 } plugin;
@@ -73,9 +74,23 @@ static void run(LV2_Handle h, uint32_t n)
         q.mix[i] = val(p, P_MIX0 + i, 0.0f);
     }
 
+    {
+        float reset = val(p, P_METER_RESET, 0.0f);
+        if (reset != p->last_reset) {                 /* the interface counts up to ask for a restart */
+            p->last_reset = reset;
+            eb_loudness_reset(p->dsp);
+        }
+    }
+
     eb_process(p->dsp, &q, p->port[P_IN_L], p->port[P_IN_R],
                p->out_ctl[P_OUT_L], p->out_ctl[P_OUT_R], n);
 
+    eb_loudness l;
+    eb_loudness_get(p->dsp, &l);
+    const float lv[6] = {l.in_momentary, l.in_short, l.in_integrated, l.out_momentary, l.out_short, l.out_integrated};
+    for (int i = 0; i < 6; i++) {
+        if (p->out_ctl[P_LUFS_IN_M + i]) *p->out_ctl[P_LUFS_IN_M + i] = lv[i];
+    }
     if (p->out_ctl[P_LATENCY]) *p->out_ctl[P_LATENCY] = (float)eb_latency(p->dsp);
     for (int b = 0; b < EB_BANDS; b++) {
         if (p->out_ctl[P_METER_DEEP_BASS + b]) *p->out_ctl[P_METER_DEEP_BASS + b] = eb_band_gain_db(p->dsp, b);

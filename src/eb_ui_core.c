@@ -12,20 +12,21 @@
 #include "eb_spawn.h"
 
 enum {
-    WIDTH = 900,
-    HEIGHT = 340,
+    WIDTH = 960,
+    HEIGHT = 350,
     ROW_H = 24,
     LIST_ROWS = 5,
     MAX_WIDGETS = 80,
-    BAND_COUNT = 5
+    BAND_COUNT = 5,
+    HIST_N = 240
 };
 
-enum { W_SLIDER, W_TOGGLE, W_SEG, W_BUTTON, W_METER, W_LIST };
-enum { A_NONE, A_NEW, A_SAVE, A_SAVE_AS, A_DELETE, A_IMPORT };
+enum { W_KNOB, W_TOGGLE, W_SEG, W_BUTTON, W_LIST };
+enum { A_NONE, A_NEW, A_SAVE, A_SAVE_AS, A_DELETE, A_IMPORT, A_RESET, A_SETTINGS };
 enum { IMPORT_NONE, IMPORT_KDIALOG, IMPORT_ZENITY, IMPORT_CONVERT };
 
 static const char *const BAND_NAME[BAND_COUNT] = {"Deep Bass", "Warmth", "Mids", "Presence", "Brilliance"};
-static const char *const BUTTON_CAPTION[] = {"", "New", "Save", "Save as...", "Delete", "Import..."};
+static const char *const BUTTON_CAPTION[] = {"", "New", "Save", "Save as...", "Delete", "Import...", "Reset integrated", "Settings"};
 static const char *const SUFFIX = " (BreakawayOne)";
 
 typedef struct {
@@ -33,7 +34,7 @@ typedef struct {
     int port;                 /* control port, -1 for buttons and the list */
     int action;
     double x, y, w, h;
-    int cell;                 /* slider inside the band table: value only, no name */
+    int cell;                 /* knob inside the band table: smaller, no caption */
 } widget;
 
 struct eb_ui {
@@ -48,6 +49,9 @@ struct eb_ui {
     widget w[MAX_WIDGETS];
     int nw;
     int hover, drag, drag_list;
+    int show_settings;        /* knobs and band table visible; off by default */
+    double tx, tw;            /* telemetry area: left edge and width */
+    double drag_y0, drag_f0;  /* knob drag: pointer height and knob position when it started */
     int list_first;
     int last_w;
     double last_click;
@@ -62,6 +66,10 @@ struct eb_ui {
 
     char toast[128];
     double toast_until, delete_until;
+
+    float hist_in[HIST_N], hist_out[HIST_N];   /* momentary loudness, one point per 0.5 s */
+    int hist_n, hist_pos;
+    double hist_t;
 
     eb_spawn sp;
     int stage;
@@ -208,35 +216,46 @@ static widget *add(eb_ui *ui, int type, int port, int action, double x, double y
     return a;
 }
 
+enum { CELL_W = 54, KNOB_CELL_H = 60, MATRIX_CELL_H = 42, KNOB_X = 262 };
+
 static void build_layout(eb_ui *ui)
 {
-    add(ui, W_LIST, -1, A_NONE, 10, 38, 270, ROW_H * LIST_ROWS + 4);
-    const double bw3 = (270 - 12) / 3.0;
+    const int full = ui->show_settings;
+    ui->nw = 0;
+    ui->hover = ui->drag = ui->last_w = -1;
+    ui->tx = full ? 652 : KNOB_X;                         /* telemetry area */
+    ui->tw = WIDTH - 10 - ui->tx;
+
+    add(ui, W_LIST, -1, A_NONE, 10, 38, 240, ROW_H * LIST_ROWS + 4);
+    const double bw3 = (240 - 12) / 3.0;
     add(ui, W_BUTTON, -1, A_NEW, 10, 168, bw3, 24);
     add(ui, W_BUTTON, -1, A_SAVE, 10 + bw3 + 6, 168, bw3, 24);
     add(ui, W_BUTTON, -1, A_SAVE_AS, 10 + 2 * (bw3 + 6), 168, bw3, 24);
-    add(ui, W_BUTTON, -1, A_DELETE, 10, 198, 132, 24);
-    add(ui, W_BUTTON, -1, A_IMPORT, 148, 198, 132, 24);
-    add(ui, W_SEG, P_MODE, A_NONE, 10, 230, 270, 24);
-    add(ui, W_SEG, P_XOVER_TYPE, A_NONE, 10, 260, 270, 24);
-    add(ui, W_TOGGLE, P_KEEP_LEVEL, A_NONE, 10, 290, 132, 24);
-    add(ui, W_TOGGLE, P_LIMITER, A_NONE, 148, 290, 132, 24);
+    add(ui, W_BUTTON, -1, A_DELETE, 10, 198, 117, 24);
+    add(ui, W_BUTTON, -1, A_IMPORT, 133, 198, 117, 24);
     add(ui, W_TOGGLE, P_BYPASS, A_NONE, WIDTH - 10 - 96, 6, 96, 22);
+    add(ui, W_BUTTON, -1, A_SETTINGS, WIDTH - 10 - 96 - 6 - 96, 6, 96, 22);
+    add(ui, W_BUTTON, -1, A_RESET, ui->tx, full ? 124 : 156, ui->tw, 20);
+    if (!full) return;
 
-    static const int left[5] = {P_POWER, P_SPEED, P_RANGE_BOOST, P_RANGE_CUT, P_TILT};
-    static const int right[4] = {P_TARGET, P_TRIM, P_GATE, P_CEILING};
-    for (int r = 0; r < 5; r++) add(ui, W_SLIDER, left[r], A_NONE, 292, 38 + r * 24, 294, 20);
-    for (int r = 0; r < 4; r++) add(ui, W_SLIDER, right[r], A_NONE, 596, 38 + r * 24, 294, 20);
+    add(ui, W_SEG, P_MODE, A_NONE, 10, 230, 240, 24);
+    add(ui, W_SEG, P_XOVER_TYPE, A_NONE, 10, 260, 240, 24);
+    add(ui, W_TOGGLE, P_KEEP_LEVEL, A_NONE, 10, 290, 117, 24);
+    add(ui, W_TOGGLE, P_LIMITER, A_NONE, 133, 290, 117, 24);
 
-    for (int b = 0; b < BAND_COUNT; b++) {
-        double y = 182 + b * 24;
-        add(ui, W_SLIDER, P_DEEP_BASS + b, A_NONE, 374, y, 104, 20)->cell = 1;
-        add(ui, W_SLIDER, P_MIX0 + b, A_NONE, 484, y, 104, 20)->cell = 1;
-        add(ui, W_SLIDER, P_ATK0 + b, A_NONE, 594, y, 104, 20)->cell = 1;
-        add(ui, W_SLIDER, P_REL0 + b, A_NONE, 704, y, 104, 20)->cell = 1;
-        add(ui, W_METER, P_METER_DEEP_BASS + b, A_NONE, 814, y, 76, 20);
+    /* general knobs, two rows of up to seven */
+    static const int row1[7] = {P_POWER, P_SPEED, P_RANGE_BOOST, P_RANGE_CUT, P_TILT, P_CEILING, P_TRIM};
+    static const int row2[6] = {P_TARGET, P_GATE, P_XOVER1, P_XOVER2, P_XOVER3, P_XOVER4};
+    for (int c = 0; c < 7; c++) add(ui, W_KNOB, row1[c], A_NONE, KNOB_X + c * CELL_W, 38, CELL_W, KNOB_CELL_H);
+    for (int c = 0; c < 6; c++) add(ui, W_KNOB, row2[c], A_NONE, KNOB_X + c * CELL_W, 38 + KNOB_CELL_H, CELL_W, KNOB_CELL_H);
+
+    /* band table: one column per band, one row per parameter */
+    static const int kind[4] = {P_DEEP_BASS, P_MIX0, P_ATK0, P_REL0};
+    for (int r = 0; r < 4; r++) {
+        for (int b = 0; b < BAND_COUNT; b++) {
+            add(ui, W_KNOB, kind[r] + b, A_NONE, KNOB_X + CELL_W + b * CELL_W, 168 + r * MATRIX_CELL_H, CELL_W, MATRIX_CELL_H)->cell = 1;
+        }
     }
-    for (int i = 0; i < 4; i++) add(ui, W_SLIDER, P_XOVER1 + i, A_NONE, 292 + i * 151, 308, 145, 20);
 }
 
 static int find_widget(const eb_ui *ui, double x, double y)
@@ -251,7 +270,7 @@ static int find_widget(const eb_ui *ui, double x, double y)
 static int find_port_widget(const eb_ui *ui, int port)
 {
     for (int i = 0; i < ui->nw; i++) {
-        if (ui->w[i].port == port && ui->w[i].type != W_METER) return i;
+        if (ui->w[i].port == port) return i;
     }
     return -1;
 }
@@ -420,6 +439,15 @@ static void run_action(eb_ui *ui, int action)
     case A_SAVE_AS: open_dialog(ui, ui->last_label[0] ? ui->last_label : "My preset"); break;
     case A_DELETE: do_delete(ui); break;
     case A_IMPORT: do_import(ui); break;
+    case A_SETTINGS:
+        ui->show_settings = !ui->show_settings;
+        build_layout(ui);
+        break;
+    case A_RESET:
+        set_port(ui, P_METER_RESET, fmod((double)ui->cur[P_METER_RESET] + 1.0, (double)eb_port_max[P_METER_RESET]));
+        ui->hist_n = ui->hist_pos = 0;
+        say(ui, "Loudness measurement restarted");
+        break;
     default: break;
     }
 }
@@ -434,6 +462,14 @@ int eb_ui_poll(eb_ui *ui)
     }
     if (ui->delete_until && t > ui->delete_until) {
         ui->delete_until = 0;
+        redraw = 1;
+    }
+    if (t - ui->hist_t >= 0.5) {                          /* one point of loudness history every 0.5 s */
+        ui->hist_t = t;
+        ui->hist_in[ui->hist_pos] = ui->cur[P_LUFS_IN_M];
+        ui->hist_out[ui->hist_pos] = ui->cur[P_LUFS_OUT_M];
+        ui->hist_pos = (ui->hist_pos + 1) % HIST_N;
+        if (ui->hist_n < HIST_N) ui->hist_n++;
         redraw = 1;
     }
     if (ui->stage != IMPORT_NONE) {
@@ -535,13 +571,14 @@ int eb_ui_press(eb_ui *ui, double x, double y, int button)
     widget *a = &ui->w[i];
     int redraw = 1;
     switch (a->type) {
-    case W_SLIDER:
+    case W_KNOB:
         if (button == 3 || (button == 1 && ui->last_w == i && t - ui->last_click < 0.35)) {
             set_port(ui, a->port, (double)eb_port_default[a->port]);
             ui->drag = -1;
         } else if (button == 1) {
-            ui->drag = i;
-            set_port(ui, a->port, value_of(a->port, (x - a->x) / a->w));
+            ui->drag = i;                                 /* drag up or down to turn the knob */
+            ui->drag_y0 = y;
+            ui->drag_f0 = frac_of(a->port, (double)ui->cur[a->port]);
         }
         break;
     case W_TOGGLE:
@@ -587,7 +624,7 @@ int eb_ui_motion(eb_ui *ui, double x, double y, int left_down)
     }
     if (ui->drag >= 0) {
         const widget *a = &ui->w[ui->drag];
-        set_port(ui, a->port, value_of(a->port, (x - a->x) / a->w));
+        set_port(ui, a->port, value_of(a->port, ui->drag_f0 + (ui->drag_y0 - y) * 0.005));
         return 1;
     }
     if (ui->drag_list) {
@@ -625,7 +662,7 @@ int eb_ui_scroll(eb_ui *ui, double x, double y, int direction)
         if (ui->list_first > max_first) ui->list_first = max_first;
         return 1;
     }
-    if (a->type == W_SLIDER) {
+    if (a->type == W_KNOB) {
         set_port(ui, a->port, value_of(a->port, frac_of(a->port, ui->cur[a->port]) + 0.02 * direction));
         return 1;
     }
@@ -687,6 +724,7 @@ int eb_ui_preset_count(const eb_ui *ui) { return ui->count; }
 const char *eb_ui_preset_label(const eb_ui *ui, int i) { return i >= 0 && i < ui->count ? ui->preset[i].label : ""; }
 int eb_ui_preset_is_user(const eb_ui *ui, int i) { return i >= 0 && i < ui->count ? ui->preset[i].user : 0; }
 int eb_ui_selected(const eb_ui *ui) { return ui->selected; }
+int eb_ui_history_len(const eb_ui *ui) { return ui->hist_n; }
 float eb_ui_value(const eb_ui *ui, uint32_t port) { return port < P_COUNT ? ui->cur[port] : 0.0f; }
 int eb_ui_list_rows(const eb_ui *ui) { (void)ui; return LIST_ROWS; }
 int eb_ui_list_first(const eb_ui *ui) { return ui->list_first; }
@@ -805,21 +843,67 @@ static int widget_enabled(const eb_ui *ui, const widget *a)
     return 1;
 }
 
-static void draw_bar(cairo_t *cr, const widget *a, unsigned fill_colour, double fill_from, double fill_to, int hot)
+static const char *short_name(int port)
 {
-    round_rect(cr, a->x, a->y, a->w, a->h, 4);
-    colour(cr, hot ? 0x323946 : 0x2a303a, 1);
-    cairo_fill(cr);
-    double x0 = a->x + fmin(fill_from, fill_to) * a->w, x1 = a->x + fmax(fill_from, fill_to) * a->w;
-    if (x1 - x0 > 0.5) {
-        cairo_save(cr);
-        round_rect(cr, a->x, a->y, a->w, a->h, 4);
-        cairo_clip(cr);
-        colour(cr, fill_colour, 1);
-        cairo_rectangle(cr, x0, a->y, x1 - x0, a->h);
-        cairo_fill(cr);
-        cairo_restore(cr);
+    switch (port) {
+    case P_POWER: return "Power";
+    case P_SPEED: return "Speed";
+    case P_RANGE_BOOST: return "Boost";
+    case P_RANGE_CUT: return "Cut";
+    case P_TILT: return "Tilt";
+    case P_CEILING: return "Ceiling";
+    case P_TRIM: return "Trim";
+    case P_TARGET: return "Target";
+    case P_GATE: return "Gate";
+    case P_XOVER1: return "X-over 1";
+    case P_XOVER2: return "X-over 2";
+    case P_XOVER3: return "X-over 3";
+    case P_XOVER4: return "X-over 4";
+    default: return eb_meta[port].name;
     }
+}
+
+/* A rotary knob: 270 degree sweep, bipolar ranges fill from the zero position. */
+static void draw_knob(eb_ui *ui, cairo_t *cr, const widget *a, int hot)
+{
+    const double a0 = 0.75 * M_PI, a1 = 2.25 * M_PI;
+    double v = (double)ui->cur[a->port], f = frac_of(a->port, v);
+    int bipolar = eb_port_min[a->port] < 0.0f && eb_port_max[a->port] > 0.0f;
+    double r = a->cell ? 12.5 : 15.0;
+    double cx = a->x + a->w / 2, cy = a->y + (a->cell ? 2.0 : 13.0) + r;
+    char buf[40];
+
+    cairo_set_font_size(cr, 10);
+    if (!a->cell) {
+        colour(cr, 0x9aa5b4, 1);
+        centred(cr, short_name(a->port), cx, a->y + 9, a->w - 2);
+    }
+    cairo_set_line_width(cr, 3.0);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    colour(cr, 0x39414f, 1);
+    cairo_new_path(cr);
+    cairo_arc(cr, cx, cy, r, a0, a1);
+    cairo_stroke(cr);
+    double av = a0 + f * (a1 - a0), az = bipolar ? a0 + frac_of(a->port, 0.0) * (a1 - a0) : a0;
+    if (fabs(av - az) > 0.01) {
+        colour(cr, hot ? 0x78b8f5 : 0x4f95e0, 1);
+        cairo_new_path(cr);
+        cairo_arc(cr, cx, cy, r, fmin(av, az), fmax(av, az));
+        cairo_stroke(cr);
+    }
+    cairo_arc(cr, cx, cy, r - 5.0, 0, 2 * M_PI);
+    colour(cr, hot ? 0x3a4350 : 0x2d333d, 1);
+    cairo_fill(cr);
+    cairo_set_line_width(cr, 2.0);
+    colour(cr, 0xf2f5f9, 1);
+    cairo_move_to(cr, cx + cos(av) * (r - 10.0), cy + sin(av) * (r - 10.0));
+    cairo_line_to(cr, cx + cos(av) * (r - 4.0), cy + sin(av) * (r - 4.0));
+    cairo_stroke(cr);
+
+    format_value(a->port, v, 0, buf, sizeof buf);
+    cairo_set_font_size(cr, 10.5);
+    colour(cr, 0xe6ebf2, 1);
+    centred(cr, buf, cx, cy + r + 12.0, a->w - 2);
 }
 
 static void draw_widget(eb_ui *ui, cairo_t *cr, int idx)
@@ -828,39 +912,9 @@ static void draw_widget(eb_ui *ui, cairo_t *cr, int idx)
     int hot = idx == ui->hover || idx == ui->drag;
     char buf[64];
     switch (a->type) {
-    case W_SLIDER: {
-        double v = (double)ui->cur[a->port], f = frac_of(a->port, v);
-        int bipolar = eb_port_min[a->port] < 0.0f && eb_port_max[a->port] > 0.0f;
-        double zero = bipolar ? frac_of(a->port, 0.0) : 0.0;
-        draw_bar(cr, a, 0x3d6fa3, zero, f, hot);
-        cairo_set_font_size(cr, 12);
-        colour(cr, 0xe6ebf2, 1);
-        format_value(a->port, v, !a->cell, buf, sizeof buf);
-        cairo_text_extents_t ext;
-        cairo_text_extents(cr, buf, &ext);
-        if (a->cell) {
-            centred(cr, buf, a->x + a->w / 2, a->y + 14.5, a->w - 6);
-        } else {
-            fit_text(cr, eb_meta[a->port].name, a->x + 7, a->y + 14.5, a->w - ext.x_advance - 20);
-            cairo_move_to(cr, a->x + a->w - 7 - ext.x_advance, a->y + 14.5);
-            cairo_show_text(cr, buf);
-        }
+    case W_KNOB:
+        draw_knob(ui, cr, a, hot);
         break;
-    }
-    case W_METER: {
-        double g = (double)ui->cur[a->port];
-        double c = fmax(-24.0, fmin(24.0, g)) / 48.0;
-        widget bar = *a;
-        draw_bar(cr, &bar, g >= 0 ? 0x3aa675 : 0xd9822b, 0.5, 0.5 + c, 0);
-        colour(cr, 0x5b6676, 1);
-        cairo_rectangle(cr, a->x + a->w / 2 - 0.5, a->y, 1, a->h);
-        cairo_fill(cr);
-        cairo_set_font_size(cr, 12);
-        colour(cr, 0xe6ebf2, 1);
-        snprintf(buf, sizeof buf, "%+.1f", g);
-        centred(cr, buf, a->x + a->w / 2, a->y + 14.5, a->w - 6);
-        break;
-    }
     case W_TOGGLE: {
         int on = ui->cur[a->port] >= 0.5f;
         round_rect(cr, a->x, a->y, a->w, a->h, 5);
@@ -888,7 +942,7 @@ static void draw_widget(eb_ui *ui, cairo_t *cr, int idx)
     case W_BUTTON: {
         int enabled = widget_enabled(ui, a);
         round_rect(cr, a->x, a->y, a->w, a->h, 5);
-        colour(cr, hot && enabled ? 0x3d4655 : 0x2a303a, 1);
+        colour(cr, a->action == A_SETTINGS && ui->show_settings ? 0x2f6fb5 : hot && enabled ? 0x3d4655 : 0x2a303a, 1);
         cairo_fill(cr);
         cairo_set_font_size(cr, 12);
         colour(cr, enabled ? 0xe6ebf2 : 0x6b7483, 1);
@@ -987,6 +1041,195 @@ static void draw_dialog(eb_ui *ui, cairo_t *cr)
     cairo_show_text(cr, "Enter saves, Esc cancels");
 }
 
+static void lufs_text(double v, char *out, size_t cap)
+{
+    if (v <= -119.0) snprintf(out, cap, "-");
+    else snprintf(out, cap, "%.1f", v);
+}
+
+/* Momentary loudness in large figures with a bar, short-term and integrated below. */
+static void draw_lufs(eb_ui *ui, cairo_t *cr, double x, double y, double w, double h,
+                      const char *title, int pm, int ps, int pi)
+{
+    const double fs = h > 100 ? 52 : 30;
+    char buf[32];
+    cairo_text_extents_t ext;
+    round_rect(cr, x, y, w, h, 6);
+    colour(cr, 0x242a32, 1);
+    cairo_fill(cr);
+    cairo_set_font_size(cr, 10);
+    colour(cr, 0x9aa5b4, 1);
+    cairo_move_to(cr, x + 10, y + 14);
+    cairo_show_text(cr, title);
+    const char *unit = w > 200 ? "LUFS momentary" : "LUFS";
+    cairo_text_extents(cr, unit, &ext);
+    cairo_move_to(cr, x + w - 10 - ext.x_advance, y + 14);
+    cairo_show_text(cr, unit);
+
+    double m = (double)ui->cur[pm];
+    lufs_text(m, buf, sizeof buf);
+    const double base = y + 16 + fs * 0.95;
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size(cr, fs);
+    colour(cr, m > -9.0 ? 0xf0c987 : 0xffffff, 1);
+    cairo_move_to(cr, x + 10, base);
+    cairo_show_text(cr, buf);
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+
+    const double bh = h > 100 ? 8 : 6, bx = x + 10, by = base + 8, bw = w - 20;
+    round_rect(cr, bx, by, bw, bh, bh / 2);
+    colour(cr, 0x2f3641, 1);
+    cairo_fill(cr);
+    double f = m <= -119.0 ? 0.0 : fmax(0.0, fmin(1.0, (m + 40.0) / 40.0));
+    if (f > 0) {
+        round_rect(cr, bx, by, bw * f, bh, bh / 2);
+        colour(cr, m > -9.0 ? 0xd9822b : 0x4f95e0, 1);
+        cairo_fill(cr);
+    }
+    colour(cr, 0xffffff, 0.8);
+    cairo_rectangle(cr, bx + bw * (40.0 - 23.0) / 40.0 - 0.5, by - 2, 1, bh + 4);   /* -23 LUFS, the EBU R128 target */
+    cairo_fill(cr);
+
+    const double ty = y + h - 7, fs2 = h > 100 ? 14 : 12;
+    for (int k = 0; k < 2; k++) {
+        double tx = x + 10 + k * (w / 2);
+        cairo_set_font_size(cr, 10);
+        colour(cr, 0x9aa5b4, 1);
+        const char *cap = k ? "integrated" : "short";
+        cairo_move_to(cr, tx, ty);
+        cairo_show_text(cr, cap);
+        cairo_text_extents(cr, cap, &ext);
+        cairo_set_font_size(cr, fs2);
+        colour(cr, 0xe6ebf2, 1);
+        lufs_text((double)ui->cur[k ? pi : ps], buf, sizeof buf);
+        cairo_move_to(cr, tx + ext.x_advance + 6, ty);
+        cairo_show_text(cr, buf);
+    }
+}
+
+static void draw_band_meters(eb_ui *ui, cairo_t *cr, double x, double y, double w, double h)
+{
+    round_rect(cr, x, y, w, h, 6);
+    colour(cr, 0x242a32, 1);
+    cairo_fill(cr);
+    cairo_set_font_size(cr, 10);
+    colour(cr, 0x9aa5b4, 1);
+    cairo_move_to(cr, x + 10, y + 12);
+    cairo_show_text(cr, "Gain per band, dB");
+    const double top = y + 20, bottom = y + h - 28, half = (bottom - top) / 2, zero = top + half;
+    const double col = w / BAND_COUNT, bar = fmin(40.0, col - 8.0);
+    char buf[24];
+    for (int b = 0; b < BAND_COUNT; b++) {
+        double cx = x + (b + 0.5) * col, g = (double)ui->cur[P_METER_DEEP_BASS + b];
+        double len = fmax(-24.0, fmin(24.0, g)) / 24.0 * half;
+        round_rect(cr, cx - bar / 2, top, bar, bottom - top, 4);
+        colour(cr, 0x2a303a, 1);
+        cairo_fill(cr);
+        colour(cr, g >= 0 ? 0x3aa675 : 0xd9822b, 1);
+        cairo_rectangle(cr, cx - bar / 2, len >= 0 ? zero - len : zero, bar, fabs(len));
+        cairo_fill(cr);
+        colour(cr, 0x7b8696, 1);
+        cairo_rectangle(cr, cx - bar / 2, zero - 0.5, bar, 1);
+        cairo_fill(cr);
+        snprintf(buf, sizeof buf, "%+.1f", g);
+        cairo_set_font_size(cr, 11);
+        colour(cr, 0xe6ebf2, 1);
+        centred(cr, buf, cx, y + h - 15, col - 2);
+        cairo_set_font_size(cr, 9.5);
+        colour(cr, 0x9aa5b4, 1);
+        centred(cr, BAND_NAME[b], cx, y + h - 4, col - 2);
+    }
+}
+
+static void draw_history(eb_ui *ui, cairo_t *cr, double x, double y, double w, double h)
+{
+    round_rect(cr, x, y, w, h, 6);
+    colour(cr, 0x242a32, 1);
+    cairo_fill(cr);
+    cairo_set_font_size(cr, 10);
+    colour(cr, 0x9aa5b4, 1);
+    cairo_move_to(cr, x + 10, y + 13);
+    cairo_show_text(cr, "Momentary loudness, last 2 minutes");
+    colour(cr, 0x8f9bb0, 1);
+    cairo_move_to(cr, x + w - 66, y + 13);
+    cairo_show_text(cr, "in");
+    colour(cr, 0x5fd0a0, 1);
+    cairo_move_to(cr, x + w - 40, y + 13);
+    cairo_show_text(cr, "out");
+
+    const double px = x + 30, py = y + 22, pw = w - 38, ph = h - 30;
+    static const double marks[3] = {0.0, -23.0, -60.0};
+    for (int i = 0; i < 3; i++) {
+        double gy = py + (0.0 - marks[i]) / 60.0 * ph;
+        colour(cr, i == 1 ? 0x4f95e0 : 0x3a414d, i == 1 ? 0.7 : 1.0);
+        cairo_set_line_width(cr, 1.0);
+        cairo_move_to(cr, px, gy + 0.5);
+        cairo_line_to(cr, px + pw, gy + 0.5);
+        cairo_stroke(cr);
+        char lab[8];
+        snprintf(lab, sizeof lab, "%.0f", marks[i]);
+        colour(cr, 0x7b8696, 1);
+        cairo_set_font_size(cr, 9.5);
+        cairo_move_to(cr, x + 6, gy + 3.5);
+        cairo_show_text(cr, lab);
+    }
+    const float *series[2] = {ui->hist_in, ui->hist_out};
+    const unsigned colours[2] = {0x8f9bb0, 0x5fd0a0};
+    cairo_set_line_width(cr, 1.5);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    for (int k = 0; k < 2; k++) {
+        colour(cr, colours[k], 1);
+        int pen_down = 0;
+        for (int n = 0; n < ui->hist_n; n++) {
+            int idx = (ui->hist_pos - ui->hist_n + n + HIST_N) % HIST_N;
+            double v = (double)series[k][idx];
+            double gx = px + (double)(HIST_N - ui->hist_n + n) / (HIST_N - 1) * pw;
+            if (v <= -119.0) {
+                pen_down = 0;
+                continue;
+            }
+            double gy = py + (0.0 - fmax(-60.0, fmin(0.0, v))) / 60.0 * ph;
+            if (pen_down) cairo_line_to(cr, gx, gy);
+            else cairo_move_to(cr, gx, gy);
+            pen_down = 1;
+        }
+        cairo_stroke(cr);
+    }
+}
+
+static void draw_panels(eb_ui *ui, cairo_t *cr)
+{
+    if (ui->show_settings) {
+        /* captions of the band table: parameter names on the left, band names on top */
+        static const char *const rows[4] = {"Offset dB", "Mix dB", "Attack", "Release"};
+        cairo_set_font_size(cr, 11);
+        colour(cr, 0xd6dce5, 1);
+        for (int r = 0; r < 4; r++) fit_text(cr, rows[r], KNOB_X, 168 + r * MATRIX_CELL_H + 19, CELL_W - 4);
+        cairo_set_font_size(cr, 10.5);
+        colour(cr, 0x9aa5b4, 1);
+        for (int b = 0; b < BAND_COUNT; b++) centred(cr, BAND_NAME[b], KNOB_X + CELL_W + (b + 0.5) * CELL_W, 163, CELL_W);
+        draw_lufs(ui, cr, ui->tx, 38, 144, 80, "INPUT", P_LUFS_IN_M, P_LUFS_IN_S, P_LUFS_IN_I);
+        draw_lufs(ui, cr, ui->tx + 154, 38, 144, 80, "OUTPUT", P_LUFS_OUT_M, P_LUFS_OUT_S, P_LUFS_OUT_I);
+        draw_band_meters(ui, cr, ui->tx, 150, ui->tw, 92);
+        draw_history(ui, cr, ui->tx, 250, ui->tw, 96);
+    } else {
+        /* settings hidden: the telemetry takes the whole width */
+        const double half = (ui->tw - 10) / 2;
+        draw_lufs(ui, cr, ui->tx, 38, half, 112, "INPUT", P_LUFS_IN_M, P_LUFS_IN_S, P_LUFS_IN_I);
+        draw_lufs(ui, cr, ui->tx + half + 10, 38, half, 112, "OUTPUT", P_LUFS_OUT_M, P_LUFS_OUT_S, P_LUFS_OUT_I);
+        const double bw = ui->tw * 0.42;
+        draw_band_meters(ui, cr, ui->tx, 184, bw, 156);
+        draw_history(ui, cr, ui->tx + bw + 10, 184, ui->tw - bw - 10, 156);
+    }
+
+    char lat[48];
+    snprintf(lat, sizeof lat, "Latency %.0f samples", (double)ui->cur[P_LATENCY]);
+    cairo_set_font_size(cr, 10);
+    colour(cr, 0x7b8696, 1);
+    cairo_move_to(cr, 10, HEIGHT - 8);
+    cairo_show_text(cr, lat);
+}
+
 void eb_ui_draw(eb_ui *ui, cairo_t *cr)
 {
     colour(cr, 0x1f2329, 1);
@@ -1012,7 +1255,7 @@ void eb_ui_draw(eb_ui *ui, cairo_t *cr)
     cairo_move_to(cr, 100, 23);
     cairo_show_text(cr, name);
 
-    const double right_edge = WIDTH - 10 - 96 - 14;
+    const double right_edge = WIDTH - 10 - 96 - 6 - 96 - 14;
     const char *status = ui->toast[0] ? ui->toast : (ui->cur[P_MODE] >= 0.5f ? "AGC mode" : "Balance mode");
     cairo_text_extents_t ext;
     cairo_text_extents(cr, status, &ext);
@@ -1022,22 +1265,7 @@ void eb_ui_draw(eb_ui *ui, cairo_t *cr)
 
     for (int i = 0; i < ui->nw; i++) draw_widget(ui, cr, i);
 
-    /* band table captions and names */
-    static const char *const head[5] = {"Offset dB", "Mix dB", "Attack", "Release", "Gain dB"};
-    static const double head_x[5] = {374 + 52, 484 + 52, 594 + 52, 704 + 52, 814 + 38};
-    cairo_set_font_size(cr, 11);
-    colour(cr, 0x9aa5b4, 1);
-    for (int c = 0; c < 5; c++) centred(cr, head[c], head_x[c], 176, 100);
-    cairo_set_font_size(cr, 12);
-    colour(cr, 0xd6dce5, 1);
-    for (int b = 0; b < BAND_COUNT; b++) fit_text(cr, BAND_NAME[b], 292, 182 + b * 24 + 14.5, 78);
-
-    char lat[48];
-    snprintf(lat, sizeof lat, "Latency %.0f samples", (double)ui->cur[P_LATENCY]);
-    cairo_set_font_size(cr, 11);
-    colour(cr, 0x7b8696, 1);
-    cairo_move_to(cr, 596, 38 + 4 * 24 + 14);
-    cairo_show_text(cr, lat);
+    draw_panels(ui, cr);
 
     if (ui->dlg) draw_dialog(ui, cr);
 }

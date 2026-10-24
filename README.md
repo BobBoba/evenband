@@ -29,7 +29,7 @@ user interface, each interface is skipped when its libraries are missing):
 
 ```
 make                          # builds build/evenband.lv2
-make test                     # 252 DSP checks, 94 interface checks, converter tests
+make test                     # 271 DSP checks, 109 interface checks, 6 plugin-binary checks, converter tests
 make install                  # to ~/.lv2
 sudo make install LV2DIR=/usr/lib/lv2   # system-wide
 ```
@@ -38,11 +38,16 @@ sudo make install LV2DIR=/usr/lib/lv2   # system-wide
 
 In Carla: Add Plugin → "Evenband" (category dynamics), then open the plugin's own window.
 
-**The plugin window.** Double-click the plugin in Carla: the window has every setting of the
-plugin as a bar slider (drag, mouse wheel for fine steps, right-click or double-click to reset),
-the two modes, the band-overlap choice and the on/off switches, a table of the five bands
-(offset, mix, attack, release and the live gain meter) and the four crossover frequencies. A
-**Bypass** switch at the top right compares the processed sound with the original: it is
+**The plugin window.** Double-click the plugin in Carla. By default the window shows only the
+telemetry, large: input and output loudness in LUFS (momentary in big figures with a bar and the
+−23 LUFS mark, short-term and integrated underneath), the live gain of each of the five bands,
+and a graph of the last two minutes of input and output loudness. **Reset integrated** restarts
+the integrated measurement and the graph (use it when a new programme starts). The **Settings**
+switch at the top right reveals every setting of the plugin as a rotary knob (drag up or down to
+turn, mouse wheel for fine steps, right-click or double-click to reset), the two modes, the
+band-overlap choice, the on/off switches, a table of the five bands (offset, mix, attack,
+release) and the four crossover frequencies; the telemetry shrinks to the right-hand column. The
+preset list and its buttons are always visible. A **Bypass** switch next to it compares the processed sound with the original: it is
 time-aligned, fades in 10 ms and the processing keeps adapting underneath, so flipping it is a
 fair A/B.
 
