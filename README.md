@@ -24,7 +24,8 @@ makepkg -si
 
 An AUR package (`yay -S evenband-lv2`) will follow once AUR registration reopens.
 
-From source (C compiler, `lv2` headers, Python 3):
+From source (C compiler, `lv2` headers, Python 3; `libx11`, `cairo` and `gtk3` development files for the
+user interface, each interface is skipped when its libraries are missing):
 
 ```
 make                          # builds build/evenband.lv2
@@ -35,10 +36,20 @@ sudo make install LV2DIR=/usr/lib/lv2   # system-wide
 
 ## Use
 
-In Carla: Add Plugin → "Evenband" (category dynamics).
+In Carla: Add Plugin → "Evenband" (category dynamics), then open the plugin's own window.
 
-Balance mode: **Power** sets how far the balance is corrected (60 % is a good start),
-**Range Boost/Cut** cap the correction per band, **Deep Bass / Warmth / Mids / Presence /
+**One-click presets.** The plugin has its own user interface: a grid with every installed
+preset (plus "Balance (default)"). A single click on a button applies that preset; the
+highlighted button is the one that matches the current settings, and five live meters show
+what each band's gain is doing. Presets are found in the usual LV2 folders (`~/.lv2`,
+`/usr/lib/lv2`, or `LV2_PATH`), so converted BreakawayOne presets appear there automatically.
+Carla shows the GTK3 version (a native Wayland window on a Wayland desktop); hosts that only
+speak X11 use the X11 version (through XWayland on Wayland). LV2 has no Wayland-specific
+interface type: X11 and toolkit-embedded interfaces are the only options it defines.
+
+Balance mode (the sliders in the host's own parameter list): **Power** sets how far the balance is corrected (60 % is a good start),
+**Range Boost/Cut** cap the correction per band (the ports allow up to 36 / 60 dB for AGC mode;
+Balance mode limits itself to 18 dB), **Deep Bass / Warmth / Mids / Presence /
 Brilliance** shift the target of each band, **Tilt** tilts the whole reference, **Speed**
 scales every time constant, **Keep Level** holds the overall loudness. The five gain
 meters show what each band is doing.
@@ -74,7 +85,7 @@ make presets    # AMX_DIR=... to point at your proc_presets folder
 They appear in your host as "<name> (BreakawayOne)", from a separate bundle,
 `~/.lv2/evenband-presets.lv2`. Only the multiband AGC and its band mix are translated;
 the noise reduction, wide-band stages, clippers, EQs and stereo enhancer of the original
-are not. [SPEC.md](SPEC.md) section 5 gives the match quality and the known limits.
+are not. [SPEC.md](SPEC.md) section 6 gives the match quality and the known limits.
 
 ## Status
 

@@ -5,23 +5,7 @@
 #include <lv2/core/lv2.h>
 
 #include "eb_dsp.h"
-
-#define EB_URI "https://github.com/BobBoba/evenband"
-
-enum port {
-    P_IN_L, P_IN_R, P_OUT_L, P_OUT_R,
-    P_POWER, P_SPEED, P_RANGE_BOOST, P_RANGE_CUT, P_TILT,
-    P_OFF0, P_OFF1, P_OFF2, P_OFF3, P_OFF4,
-    P_XO0, P_XO1, P_XO2, P_XO3,
-    P_KEEP_LEVEL, P_LIMITER, P_CEILING, P_XOVER_TYPE,
-    P_MODE, P_TARGET, P_TRIM, P_GATE,
-    P_ATK0, P_ATK1, P_ATK2, P_ATK3, P_ATK4,
-    P_REL0, P_REL1, P_REL2, P_REL3, P_REL4,
-    P_MIX0, P_MIX1, P_MIX2, P_MIX3, P_MIX4,
-    P_LATENCY,
-    P_METER0, P_METER1, P_METER2, P_METER3, P_METER4,
-    P_COUNT
-};
+#include "eb_ports.h"
 
 typedef struct {
     eb_state *dsp;
@@ -72,8 +56,8 @@ static void run(LV2_Handle h, uint32_t n)
     q.range_boost = val(p, P_RANGE_BOOST, q.range_boost);
     q.range_cut = val(p, P_RANGE_CUT, q.range_cut);
     q.tilt = val(p, P_TILT, q.tilt);
-    for (int i = 0; i < EB_BANDS; i++) q.offset[i] = val(p, P_OFF0 + i, 0.0f);
-    for (int k = 0; k < EB_SPLITS; k++) q.xover[k] = val(p, P_XO0 + k, q.xover[k]);
+    for (int i = 0; i < EB_BANDS; i++) q.offset[i] = val(p, P_DEEP_BASS + i, 0.0f);
+    for (int k = 0; k < EB_SPLITS; k++) q.xover[k] = val(p, P_XOVER1 + k, q.xover[k]);
     q.keep_level = val(p, P_KEEP_LEVEL, 1.0f) >= 0.5f;
     q.limiter_on = val(p, P_LIMITER, 1.0f) >= 0.5f;
     q.ceiling = val(p, P_CEILING, q.ceiling);
@@ -93,7 +77,7 @@ static void run(LV2_Handle h, uint32_t n)
 
     if (p->out_ctl[P_LATENCY]) *p->out_ctl[P_LATENCY] = (float)eb_latency(p->dsp);
     for (int b = 0; b < EB_BANDS; b++) {
-        if (p->out_ctl[P_METER0 + b]) *p->out_ctl[P_METER0 + b] = eb_band_gain_db(p->dsp, b);
+        if (p->out_ctl[P_METER_DEEP_BASS + b]) *p->out_ctl[P_METER_DEEP_BASS + b] = eb_band_gain_db(p->dsp, b);
     }
 }
 
@@ -111,7 +95,7 @@ static const void *extension_data(const char *uri)
 }
 
 static const LV2_Descriptor descriptor = {
-    EB_URI, instantiate, connect_port, activate, run, NULL, cleanup, extension_data
+    EB_PLUGIN_URI, instantiate, connect_port, activate, run, NULL, cleanup, extension_data
 };
 
 LV2_SYMBOL_EXPORT const LV2_Descriptor *lv2_descriptor(uint32_t index)

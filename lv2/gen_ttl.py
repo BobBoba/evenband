@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-"""Generate evenband.ttl. Port order must match enum port in src/eb_lv2.c."""
+"""Generate the LV2 description files and the port header from one port list.
+
+usage: gen_ttl.py ttl|manifest|header [--x11] [--gtk3]
+  --x11 / --gtk3   describe that user interface as well
+"""
 import sys
+
+MODE = sys.argv[1] if len(sys.argv) > 1 else "ttl"
+X11 = "--x11" in sys.argv
+GTK3 = "--gtk3" in sys.argv
+URI = "https://github.com/BobBoba/evenband"
 
 XOVER_DEFAULT = 0  # keep equal to the default in eb_defaults()
 ports = []
@@ -19,8 +28,8 @@ audio("in_l", "In L"); audio("in_r", "In R")
 audio("out_l", "Out L", True); audio("out_r", "Out R", True)
 ctl("power", "Power", 0, 100, 60, "pc")
 ctl("speed", "Speed", 0.25, 4, 1)
-ctl("range_boost", "Range Boost", 0, 18, 9, "db")
-ctl("range_cut", "Range Cut", 0, 18, 9, "db")
+ctl("range_boost", "Range Boost", 0, 36, 9, "db")
+ctl("range_cut", "Range Cut", 0, 60, 9, "db")
 ctl("tilt", "Tilt", -3, 3, 0)
 for sym, nm in [("deep_bass", "Deep Bass"), ("warmth", "Warmth"), ("mids", "Mids"),
                 ("presence", "Presence"), ("brilliance", "Brilliance")]:
@@ -54,40 +63,104 @@ for sym, nm in [("meter_deep_bass", "Gain Deep Bass"), ("meter_warmth", "Gain Wa
                 ("meter_brilliance", "Gain Brilliance")]:
     ctl(sym, nm, -40, 40, 0, "db", out=True)
 
-print("""@prefix lv2:   <http://lv2plug.in/ns/lv2core#> .
+PREFIXES = """@prefix lv2:   <http://lv2plug.in/ns/lv2core#> .
 @prefix doap:  <http://usefulinc.com/ns/doap#> .
 @prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix units: <http://lv2plug.in/ns/extensions/units#> .
+@prefix ui:    <http://lv2plug.in/ns/extensions/ui#> .
+"""
 
 
-<https://github.com/BobBoba/evenband>
-    a lv2:Plugin, lv2:CompressorPlugin ;
+def emit_ttl():
+    print(PREFIXES)
+    print("<%s>" % URI)
+    print("""    a lv2:Plugin, lv2:CompressorPlugin ;
     doap:name "Evenband" ;
     doap:license <http://opensource.org/licenses/MIT> ;
     lv2:optionalFeature lv2:hardRTCapable ;
     rdfs:comment "Five-band spectral balance compressor: pulls the tonal balance of the programme toward a reference spectrum, with a look-ahead output limiter." ;""")
-chunks = []
-for i, p in enumerate(ports):
-    s = "    [\n        a lv2:%s, lv2:%s ;\n        lv2:index %d ;\n        lv2:symbol \"%s\" ;\n        lv2:name \"%s\" ;\n" % (
-        "OutputPort" if p["out"] else "InputPort", "AudioPort" if p["kind"] == "audio" else "ControlPort",
-        i, p["sym"], p["name"])
-    if p["kind"] == "ctl":
-        if not p["out"]:
-            s += "        lv2:default %s ;\n" % p["df"]
-        s += "        lv2:minimum %s ;\n        lv2:maximum %s ;\n" % (p["mn"], p["mx"])
-        if p["out"]:
-            s += "        lv2:default %s ;\n" % p["df"]
-        if p["toggled"]:
-            s += "        lv2:portProperty lv2:toggled ;\n"
-        if p["integer"]:
-            s += "        lv2:portProperty lv2:integer ;\n"
-        if p["unit"]:
-            s += "        units:unit units:%s ;\n" % p["unit"]
-        if p["extra"]:
-            s += "        " + p["extra"] + "\n"
-        for label, value in (p["points"] or []):
-            s += "        lv2:scalePoint [ rdfs:label \"%s\" ; rdf:value %d ] ;\n" % (label, value)
-    s += "    ]"
-    chunks.append(s)
-print("    lv2:port\n" + " ,\n".join(chunks) + " .")
+    if X11:
+        print("    ui:ui <%s#ui> ;" % URI)
+    if GTK3:
+        print("    ui:ui <%s#ui-gtk3> ;" % URI)
+    chunks = []
+    for i, p in enumerate(ports):
+        s = "    [\n        a lv2:%s, lv2:%s ;\n        lv2:index %d ;\n        lv2:symbol \"%s\" ;\n        lv2:name \"%s\" ;\n" % (
+            "OutputPort" if p["out"] else "InputPort", "AudioPort" if p["kind"] == "audio" else "ControlPort",
+            i, p["sym"], p["name"])
+        if p["kind"] == "ctl":
+            if not p["out"]:
+                s += "        lv2:default %s ;\n" % p["df"]
+            s += "        lv2:minimum %s ;\n        lv2:maximum %s ;\n" % (p["mn"], p["mx"])
+            if p["out"]:
+                s += "        lv2:default %s ;\n" % p["df"]
+            if p["toggled"]:
+                s += "        lv2:portProperty lv2:toggled ;\n"
+            if p["integer"]:
+                s += "        lv2:portProperty lv2:integer ;\n"
+            if p["unit"]:
+                s += "        units:unit units:%s ;\n" % p["unit"]
+            if p["extra"]:
+                s += "        " + p["extra"] + "\n"
+            for label, value in (p["points"] or []):
+                s += "        lv2:scalePoint [ rdfs:label \"%s\" ; rdf:value %d ] ;\n" % (label, value)
+        s += "    ]"
+        chunks.append(s)
+    print("    lv2:port\n" + " ,\n".join(chunks) + " .")
+    if X11:
+        print("""
+<%s#ui>
+    a ui:X11UI ;
+    lv2:requiredFeature ui:idleInterface ;
+    lv2:optionalFeature ui:resize ;
+    lv2:extensionData ui:idleInterface .""" % URI)
+    if GTK3:
+        print("""
+<%s#ui-gtk3>
+    a ui:Gtk3UI .""" % URI)
+
+
+def emit_manifest():
+    print("""@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+""")
+    print("<%s>\n    a lv2:Plugin ;\n    lv2:binary <evenband.so> ;\n    rdfs:seeAlso <evenband.ttl> ." % URI)
+    if X11:
+        print("\n<%s#ui>\n    a ui:X11UI ;\n    ui:binary <evenband_ui_x11.so> ;\n    rdfs:seeAlso <evenband.ttl> ." % URI)
+    if GTK3:
+        print("\n<%s#ui-gtk3>\n    a ui:Gtk3UI ;\n    ui:binary <evenband_ui_gtk3.so> ;\n    rdfs:seeAlso <evenband.ttl> ." % URI)
+
+
+def emit_header():
+    print("/* Generated by lv2/gen_ttl.py; do not edit. One list feeds the TTL, the plugin and the UI. */")
+    print("#ifndef EB_PORTS_H\n#define EB_PORTS_H\n")
+    print('#define EB_PLUGIN_URI "%s"\n' % URI)
+    print("enum eb_port {")
+    for p in ports:
+        print("    P_%s," % p["sym"].upper())
+    print("    P_COUNT\n};\n")
+    print("static const char *const eb_port_symbol[P_COUNT] = {")
+    for p in ports:
+        print('    "%s",' % p["sym"])
+    print("};\n")
+    print("static const float eb_port_default[P_COUNT] = {")
+    for p in ports:
+        print("    %sf," % repr(float(p["df"] if p["kind"] == "ctl" else 0)))
+    print("};\n")
+    print("static const float eb_port_min[P_COUNT] = {")
+    for p in ports:
+        print("    %sf," % repr(float(p["mn"] if p["kind"] == "ctl" else 0)))
+    print("};\n")
+    print("static const float eb_port_max[P_COUNT] = {")
+    for p in ports:
+        print("    %sf," % repr(float(p["mx"] if p["kind"] == "ctl" else 0)))
+    print("};\n")
+    print("static const unsigned char eb_port_is_output[P_COUNT] = {")
+    for p in ports:
+        print("    %d," % (1 if p["out"] else 0))
+    print("};\n\n#endif")
+
+
+{"ttl": emit_ttl, "manifest": emit_manifest, "header": emit_header}[MODE]()

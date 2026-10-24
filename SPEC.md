@@ -64,7 +64,18 @@ gain_i = trim + power · clamp(target + offset_i − level_i, −range_cut, +ran
 * Gain moves toward its goal with per-band attack (gain falls) and release (gain rises) time constants, exponential in dB.
 * `gate`: below this **total** level all gains are held, so quiet passages and room noise are not pulled up.
 
-## 3. Ports
+## 3. User interface
+
+`src/eb_ui_core.c` (toolkit independent, Cairo) draws a preset grid and five band-gain meters and
+turns a click on a preset into port writes; `eb_ui_x11.c` (ui:X11UI) and `eb_ui_gtk3.c` (ui:Gtk3UI)
+feed it events. Presets are read from the installed LV2 preset files that apply to Evenband
+(`src/eb_presets.c`), so nothing is bundled. The selected button is derived from the current port
+values, so it also reacts to changes made in the host. Verified: parser and core unit tests (32
+checks), both interfaces loaded like a host does (`tests/ui_harness.c`, Xvfb, real mouse clicks)
+and inside Carla's own UI bridge (GTK3), where one click on a preset switched the plugin and the
+meters followed.
+
+## 4. Ports
 
 Inputs: Power, Speed, Range Boost, Range Cut, Tilt, five band offsets (Deep Bass,
 Warmth, Mids, Presence, Brilliance, ±18 dB), four crossover frequencies, Keep Level,
@@ -73,7 +84,7 @@ Gate, five AGC attack and five release times, five static band mixes (±24 dB).
 Outputs: Latency (samples, `lv2:latency`, 5 ms) and one gain meter per band.
 Port order is generated from `lv2/gen_ttl.py`; keep it equal to `enum port` in `src/eb_lv2.c`.
 
-## 4. Calibration: what was measured
+## 5. Calibration: what was measured
 
 All against BreakawayOne's output with the multiband AGC isolated (wide-band AGC,
 clippers, limiters, second/third wide-band stage, stereo enhancer, sub-bass, parametric
@@ -91,7 +102,7 @@ EQ switched off through the application's own state file). The raw captures and 
 | Band layout ≈ 59 / 170 / 728 / 4083 Hz (LR4) | global fit over 31 presets; single-band probes give bell-shaped band responses ~2 octaves wide |
 | `freeze_threshold` holds the gains below that total level | loud-then-quiet probe: gain stays ~11 dB at −50, climbs to the 18 dB limit at −90 |
 
-## 5. Verification
+## 6. Verification
 
 ### 5.1 Unit and measurement tests (`make test`): 246 checks + 4 converter tests, 0 failures
 
@@ -119,13 +130,13 @@ static mix, gate and 48/192 kHz independence; 5 ms reported latency.
 * The `alt` (speech) settings of some presets are ignored.
 * Patent status: see section 1.
 
-## 6. How the measurements were made
+## 7. How the measurements were made
 
 BreakawayOne ran under WINE in a private virtual display, its audio bound to two private
 PipeWire null sinks. Parameters were changed by editing the application's own state file
 while it was stopped; test noise went in, the processed audio was recorded from the output
 sink with an explicit-device recorder, and the band gains were computed with an
-independent FFT analysis. Single-parameter probes gave the rules in section 4; a global fit
+independent FFT analysis. Single-parameter probes gave the rules in section 5; a global fit
 over all 31 factory presets gave the constants. Details that bit during the work: a recorder
 that silently falls back to the default microphone if its target is missing, and the need to
 switch off every other stage of the original chain before measuring the multiband AGC.
