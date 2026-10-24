@@ -15,7 +15,14 @@ or too much or too little treble, come out balanced. It has two modes:
 
 ## Install
 
-Arch Linux (AUR, once published): `yay -S evenband-lv2`
+Arch Linux, with the packaging recipe from this repository (works today):
+
+```
+git clone https://github.com/BobBoba/evenband && cd evenband/packaging/aur
+makepkg -si
+```
+
+An AUR package (`yay -S evenband-lv2`) will follow once AUR registration reopens.
 
 From source (C compiler, `lv2` headers, Python 3):
 
