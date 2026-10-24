@@ -6,11 +6,11 @@ pkgdesc='Five-band tonal compressor (LV2) with one-click preset interface: evens
 arch=('x86_64' 'aarch64')
 url='https://github.com/BobBoba/evenband'
 license=('MIT')
-depends=('glibc' 'python' 'cairo' 'libx11' 'gtk3')
+depends=('glibc' 'python' 'cairo' 'libx11' 'gtk3' 'glib2')
 makedepends=('lv2' 'pkgconf')
 optdepends=('carla: host the plugin on its own or in a rack')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('3045a1899f4c7b284683eaf2ad3c5afa4c40141c71878672b78e25d3daf54bd9')
 
 build() {
   cd "evenband-$pkgver"

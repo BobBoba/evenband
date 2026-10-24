@@ -1,16 +1,21 @@
 pkgbase = evenband-lv2
-	pkgdesc = Five-band tonal compressor (LV2): evens out bass/treble balance, imports BreakawayOne-style settings
-	pkgver = 1.0.1
+	pkgdesc = Five-band tonal compressor (LV2) with one-click preset interface: evens out bass/treble balance
+	pkgver = 1.1.0
 	pkgrel = 1
 	url = https://github.com/BobBoba/evenband
 	arch = x86_64
 	arch = aarch64
 	license = MIT
 	makedepends = lv2
+	makedepends = pkgconf
 	depends = glibc
 	depends = python
+	depends = cairo
+	depends = libx11
+	depends = gtk3
+	depends = glib2
 	optdepends = carla: host the plugin on its own or in a rack
-	source = evenband-lv2-1.0.1.tar.gz::https://github.com/BobBoba/evenband/archive/refs/tags/v1.0.1.tar.gz
-	sha256sums = 4a7abc02f9859f89121e1f2ac284aa6beee4c723c240ba3ae59f23ab77e951b3
+	source = evenband-lv2-1.1.0.tar.gz::https://github.com/BobBoba/evenband/archive/refs/tags/v1.1.0.tar.gz
+	sha256sums = 3045a1899f4c7b284683eaf2ad3c5afa4c40141c71878672b78e25d3daf54bd9
 
 pkgname = evenband-lv2
